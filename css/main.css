@@ -901,3 +901,8 @@
 .paint-feel-canvas.feel-releasing{
   animation-duration:720ms;
 }
+
+/* v2.0 physics overlay */
+#physicsCanvas{position:absolute;inset:8px;border-radius:50%;pointer-events:none;z-index:1;mix-blend-mode:normal;}
+#stageCanvas{z-index:0;}
+.paint-feel-canvas{z-index:3;}

@@ -12,7 +12,7 @@
 <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Kaisei+Decol&family=Zen+Maru+Gothic:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/main.css?v=1.5.0">
+<link rel="stylesheet" href="css/main.css?v=2.0.0">
 
 </head>
 <body>
@@ -79,6 +79,7 @@
           <div class="stage-dish-badge" id="stageDishBadge">1</div>
           <div class="stage-dish-star" id="stageDishStar">⭐</div>
           <canvas id="stageCanvas"></canvas>
+          <canvas id="physicsCanvas" aria-hidden="true"></canvas>
           <button class="dish-wash" id="washDishBtn" title="このパレットをあらう">🧽</button>
           <button class="dish-tool" id="sparkleBtn" title="ラメをまぜる" style="left:-6px; top:-6px;">✨</button>
         </div>
@@ -141,11 +142,12 @@
   </div>
 </div>
 
-<script src="js/colors.js?v=1.5.0"></script>
-<script src="js/paintEngine.js?v=1.5.0"></script>
-<script src="js/mixEngine.js?v=1.5.0"></script>
-<script src="js/renderer.js?v=1.5.0"></script>
-<script src="js/fingerDynamics.js?v=1.5.0"></script>
-<script src="js/app.js?v=1.5.0"></script>
+<script src="js/colors.js?v=2.0.0"></script>
+<script src="js/paintEngine.js?v=2.0.0"></script>
+<script src="js/mixEngine.js?v=2.0.0"></script>
+<script src="js/renderer.js?v=2.0.0"></script>
+<script src="js/fingerDynamics.js?v=2.0.0"></script>
+<script src="js/paintPhysics.js?v=2.0.0"></script>
+<script src="js/app.js?v=2.0.0"></script>
 
 </html>

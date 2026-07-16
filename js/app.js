@@ -1009,6 +1009,9 @@
   const stageDish = document.getElementById('stageDish');
   const stageCanvas = document.getElementById('stageCanvas');
   const stageCtx = stageCanvas.getContext('2d');
+  const physicsCanvas = document.getElementById('physicsCanvas');
+  const physicsCtx = physicsCanvas.getContext('2d');
+  const PhysicsFieldModel = window.YubisakiPhysics && window.YubisakiPhysics.PaintPhysicsField;
   const PaintBlobModel = window.YubisakiPaint && window.YubisakiPaint.PaintBlob;
   const PaintRendererModel = window.YubisakiRenderer && window.YubisakiRenderer.PaintRenderer;
   const paintRenderer = PaintRendererModel ? new PaintRendererModel(stageCtx) : null;
@@ -1254,6 +1257,7 @@
     setFeelPoint(clientX,clientY);
     lastFeelVector={dx:0,dy:0};
     drawLocalDeformation(clientX,clientY,'press',0,0,.48);
+    { const rr=stageCanvas.getBoundingClientRect(), dish=dishes[selectedPaletteIndex]; if(dish.physicsField) dish.physicsField.press((clientX-rr.left)/rr.width,(clientY-rr.top)/rr.height,.13,.95); }
     startPressFeelLoop(clientX,clientY);
     softHaptic(12);
     stageDish.classList.remove('paint-release');
@@ -1269,6 +1273,7 @@
     const speed=Math.min(1.2,Math.hypot(dx,dy)/18);
     const angle=Math.atan2(dy,dx)*180/Math.PI;
     drawLocalDeformation(clientX,clientY,'mix',dx,dy,.72+speed*.38);
+    { const rr=stageCanvas.getBoundingClientRect(), dish=dishes[selectedPaletteIndex]; if(dish.physicsField) dish.physicsField.drag((prevX-rr.left)/rr.width,(prevY-rr.top)/rr.height,(clientX-rr.left)/rr.width,(clientY-rr.top)/rr.height,.12,.75+speed*.45); }
     if(speed>.42) softHaptic(7);
     stageDish.classList.remove('paint-press');
     stageDish.classList.add('paint-mixing');
@@ -1340,7 +1345,8 @@
     dishes.push({
       storage, storageCtx: null, size: STAGE_SIZE, dpr: stageDpr,
       activeStamp:null, hasPaint:false, currentColor:null, mixProgress:0, fullyMixed:false,
-      usedTubeNames:new Set(), hasGlitter:false, paintModel:null
+      usedTubeNames:new Set(), hasGlitter:false, paintModel:null,
+      physicsField: PhysicsFieldModel ? new PhysicsFieldModel(56) : null
     });
 
     const btn = document.createElement('button');
@@ -1370,6 +1376,9 @@
     stageCanvas.height = STAGE_SIZE*dpr;
     stageCanvas.style.width = STAGE_SIZE+'px';
     stageCanvas.style.height = STAGE_SIZE+'px';
+    physicsCanvas.width = STAGE_SIZE*dpr; physicsCanvas.height = STAGE_SIZE*dpr;
+    physicsCanvas.style.width = STAGE_SIZE+'px'; physicsCanvas.style.height = STAGE_SIZE+'px';
+    physicsCtx.setTransform(dpr,0,0,dpr,0,0);
     stageCtx.scale(dpr,dpr);
     if(prevData){ stageCtx.drawImage(prevData,0,0,prevData.width,prevData.height,0,0,STAGE_SIZE,STAGE_SIZE); }
 
@@ -2051,6 +2060,7 @@
     }
 
     if(selectedIsWater){
+      if(dish.physicsField) dish.physicsField.addWater(dish.activeStamp.x/STAGE_SIZE,dish.activeStamp.y/STAGE_SIZE,dish.activeStamp.r/STAGE_SIZE,.85);
       waterBlobStamp(dish.activeStamp.x, dish.activeStamp.y, dish.activeStamp.r);
       dish.waterTicks = (dish.waterTicks||0) + 1;
       if(dish.paintModel && dish.paintModel.addWater) dish.paintModel.addWater(0.055);
@@ -2069,6 +2079,7 @@
         dish.paintModel.gloss = Math.min(1, dish.paintModel.gloss + 0.025);
       }
       paintBlobStamp(dish.activeStamp.x, dish.activeStamp.y, dish.activeStamp.r, selectedColor, dish.paintModel);
+      if(dish.physicsField) dish.physicsField.deposit(dish.activeStamp.x/STAGE_SIZE,dish.activeStamp.y/STAGE_SIZE,dish.activeStamp.r/STAGE_SIZE,selectedColor,.5,0);
       dish.hasPaint = true;
       dish.mixProgress = 0;
       dish.fullyMixed = false;
@@ -2109,6 +2120,7 @@
     const dish = dishes[selectedPaletteIndex];
     stageCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
     dish.activeStamp=null; dish.hasPaint=false; dish.currentColor=null; dish.mixProgress=0; dish.fullyMixed=false; dish.paintModel=null;
+    if(dish.physicsField) dish.physicsField.clear();
     dish.usedTubeNames = new Set(); dish.hasGlitter = false;
     dish.colorTicks = {}; dish.totalTicks = 0; dish.whiteTicks = 0; dish.waterTicks = 0;
     if(dish.storageCtx) dish.storageCtx.clearRect(0,0,dish.size,dish.size);
@@ -2674,6 +2686,20 @@
   document.addEventListener('contextmenu', e=>{
     if(document.body.classList.contains('locked')) e.preventDefault();
   });
+
+  let physicsLast=performance.now();
+  function physicsFrame(now){
+    const dt=Math.min(.034,(now-physicsLast)/1000||.016); physicsLast=now;
+    const dish=dishes[selectedPaletteIndex];
+    if(dish && dish.physicsField && STAGE_SIZE>0){
+      dish.physicsField.step(dt);
+      dish.physicsField.render(physicsCtx,STAGE_SIZE);
+    } else if(STAGE_SIZE>0){
+      physicsCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
+    }
+    requestAnimationFrame(physicsFrame);
+  }
+  requestAnimationFrame(physicsFrame);
 
   renderMiniPalette();
   renderEncyclopedia();
