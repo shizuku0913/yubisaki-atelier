@@ -1,4 +1,4 @@
-# ゆびさきアトリエ v1.1.0
+# ゆびさきアトリエ v1.1.1
 
 子どもが指で絵の具を出し、混ぜ、作った色で絵を描けるWebアプリです。
 
@@ -24,3 +24,11 @@ GitHub Pages公開後、以下のURLで確認できます。
 `https://shizuku0913.github.io/yubisaki-atelier/`
 
 ローカル確認では、VS CodeのLive ServerなどHTTPサーバー経由で開くとPWA機能も確認できます。
+
+
+## v1.1.1 changes
+
+- Connected `PaintBlob` and `PaintRenderer` to the live palette canvas.
+- Paint height, wetness, viscosity and gloss now affect the rendered dollop.
+- Unified freshly dispensed paint and the final mixed paint under one renderer.
+- Kept a compatibility fallback so the app does not become blank if a module fails to load.

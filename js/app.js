@@ -1007,6 +1007,9 @@
   const stageDish = document.getElementById('stageDish');
   const stageCanvas = document.getElementById('stageCanvas');
   const stageCtx = stageCanvas.getContext('2d');
+  const PaintBlobModel = window.YubisakiPaint && window.YubisakiPaint.PaintBlob;
+  const PaintRendererModel = window.YubisakiRenderer && window.YubisakiRenderer.PaintRenderer;
+  const paintRenderer = PaintRendererModel ? new PaintRendererModel(stageCtx) : null;
   const stageBadge = document.getElementById('stageDishBadge');
   const stageStar = document.getElementById('stageDishStar');
   let STAGE_SIZE = 0;
@@ -1017,7 +1020,7 @@
     dishes.push({
       storage, storageCtx: null, size: STAGE_SIZE, dpr: stageDpr,
       activeStamp:null, hasPaint:false, currentColor:null, mixProgress:0, fullyMixed:false,
-      usedTubeNames:new Set(), hasGlitter:false
+      usedTubeNames:new Set(), hasGlitter:false, paintModel:null
     });
 
     const btn = document.createElement('button');
@@ -1141,66 +1144,30 @@
     return isNearWhite(c.r,c.g,c.b) ? 'source-over' : 'multiply';
   }
 
-  function paintBlobStamp(cx, cy, r, color){
-    const ctx = stageCtx;
-    const seed = Math.random()*10;
-    const light = lighten(color,0.24);
-    const veryLight = lighten(color,0.55);
+  function paintBlobStamp(cx, cy, r, color, paintModel){
+    // v1.1.1: all raised-paint rendering now goes through the shared
+    // renderer. Keeping this adapter means the gesture code stays simple
+    // while Renderer can evolve independently in later releases.
+    if(paintRenderer){
+      const model = paintModel || (PaintBlobModel ? new PaintBlobModel({color}) : {color, gloss:0.9, wetness:1, viscosity:0.82, height:1});
+      model.color = color;
+      paintRenderer.drawBlob(model, cx, cy, r, {
+        composite: mixBlendMode(color),
+        seed: (cx * 0.071 + cy * 0.113 + r * 0.19) % 20
+      });
+      return;
+    }
 
-    // base blob with a strong outer shadow, so it clearly reads as a thick
-    // dollop sitting ON TOP of the dish (not sunken into it) - no dark rim
-    // gradient, so the paint itself stays true to its color, not blackish
+    // Compatibility fallback for very old browsers where the renderer did
+    // not load. It intentionally remains small; normal builds use Renderer.
+    const ctx = stageCtx;
     ctx.save();
     ctx.globalCompositeOperation = mixBlendMode(color);
-    ctx.shadowColor='rgba(0,0,0,.22)'; ctx.shadowBlur=16; ctx.shadowOffsetY=8;
-    blobPath(ctx, cx, cy, r, seed);
-    const grad = ctx.createRadialGradient(cx-r*0.3, cy-r*0.35, r*0.15, cx, cy, r*1.05);
-    grad.addColorStop(0,light); grad.addColorStop(1,color);
+    ctx.shadowColor='rgba(0,0,0,.22)'; ctx.shadowBlur=14; ctx.shadowOffsetY=7;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2);
+    const grad = ctx.createRadialGradient(cx-r*.3,cy-r*.35,r*.1,cx,cy,r);
+    grad.addColorStop(0,lighten(color,.3)); grad.addColorStop(1,color);
     ctx.fillStyle=grad; ctx.fill();
-    ctx.restore();
-
-    // bumpy, squeezed-paint texture - light highlight ridges only, so the
-    // paint doesn't pick up a blackish cast from dark texture speckles
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    blobPath(ctx, cx, cy, r, seed);
-    ctx.clip();
-    const bumpCount = Math.max(10, Math.floor(r/5));
-    for(let i=0;i<bumpCount;i++){
-      const ang = Math.random()*Math.PI*2;
-      const rad = Math.pow(Math.random(),0.6)*r*0.88;
-      const bx = cx + Math.cos(ang)*rad;
-      const by = cy + Math.sin(ang)*rad;
-      const br = r*(0.16+Math.random()*0.2);
-      const bumpGrad = ctx.createRadialGradient(bx-br*0.32, by-br*0.36, br*0.08, bx, by, br);
-      bumpGrad.addColorStop(0, 'rgba(255,255,255,0.32)');
-      bumpGrad.addColorStop(0.6, 'rgba(255,255,255,0.1)');
-      bumpGrad.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.beginPath();
-      ctx.arc(bx,by,br,0,Math.PI*2);
-      ctx.fillStyle = bumpGrad;
-      ctx.fill();
-    }
-    ctx.restore();
-
-    // rim edge
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    blobPath(ctx,cx,cy,r,seed);
-    ctx.lineWidth=Math.max(2,r*0.08); ctx.strokeStyle='rgba(255,255,255,0.3)'; ctx.stroke();
-    ctx.restore();
-
-    // main glossy highlight, upper-left like the reference
-    ctx.save();
-    ctx.beginPath();
-    ctx.ellipse(cx-r*0.32, cy-r*0.38, r*0.34, r*0.2, -0.5, 0, Math.PI*2);
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(cx-r*0.4, cy-r*0.46, r*0.12, r*0.08, -0.5, 0, Math.PI*2);
-    ctx.fillStyle = veryLight;
-    ctx.globalAlpha = 0.85;
-    ctx.fill();
     ctx.restore();
   }
 
@@ -1541,30 +1508,21 @@
       renderWatercolorFill(STAGE_SIZE/2, STAGE_SIZE/2, STAGE_SIZE/2, hex, fillAlpha);
     } else {
       const cx = STAGE_SIZE/2, cy = STAGE_SIZE/2, rad = STAGE_SIZE*0.36;
+      if(!dish.paintModel && PaintBlobModel) dish.paintModel = new PaintBlobModel({color:hex});
+      if(dish.paintModel){
+        dish.paintModel.color = hex;
+        dish.paintModel.mixLevel = 1;
+        dish.paintModel.height = Math.min(1.75, 0.9 + Math.min(14, pigmentTicks) * 0.045);
+        dish.paintModel.wetness = Math.max(0.35, 1-waterFrac*0.55);
+        dish.paintModel.gloss = Math.max(0.35, 0.94-waterFrac*0.25);
+        dish.paintModel.viscosity = Math.max(0.2, 0.84-waterFrac*0.5);
+      }
       stageCtx.save();
       stageCtx.globalAlpha = fillAlpha;
-      stageCtx.shadowColor = 'rgba(0,0,0,.24)';
-      stageCtx.shadowBlur = 18;
-      stageCtx.shadowOffsetY = 9;
-      const grad = stageCtx.createRadialGradient(cx-rad*0.32, cy-rad*0.36, rad*0.1, cx, cy, rad*1.05);
-      grad.addColorStop(0, lighten(hex,0.28));
-      grad.addColorStop(1, hex);
-      stageCtx.beginPath();
-      stageCtx.arc(cx, cy, rad, 0, Math.PI*2);
-      stageCtx.fillStyle = grad;
-      stageCtx.fill();
-      stageCtx.restore();
-      // glossy highlight
-      stageCtx.save();
-      stageCtx.globalAlpha = fillAlpha;
-      stageCtx.beginPath();
-      stageCtx.ellipse(cx-rad*0.32, cy-rad*0.38, rad*0.32, rad*0.18, -0.5, 0, Math.PI*2);
-      stageCtx.fillStyle = 'rgba(255,255,255,0.55)';
-      stageCtx.fill();
-      stageCtx.beginPath();
-      stageCtx.ellipse(cx-rad*0.4, cy-rad*0.46, rad*0.11, rad*0.07, -0.5, 0, Math.PI*2);
-      stageCtx.fillStyle = 'rgba(255,255,255,0.75)';
-      stageCtx.fill();
+      if(paintRenderer) paintRenderer.drawBlob(dish.paintModel || {color:hex}, cx, cy, rad, {seed:selectedPaletteIndex+3});
+      else {
+        stageCtx.beginPath(); stageCtx.arc(cx,cy,rad,0,Math.PI*2); stageCtx.fillStyle=hex; stageCtx.fill();
+      }
       stageCtx.restore();
     }
     stageDish.classList.remove('mixpulse'); void stageDish.offsetWidth; stageDish.classList.add('mixpulse');
@@ -1713,13 +1671,22 @@
     if(selectedIsWater){
       waterBlobStamp(dish.activeStamp.x, dish.activeStamp.y, dish.activeStamp.r);
       dish.waterTicks = (dish.waterTicks||0) + 1;
+      if(dish.paintModel && dish.paintModel.addWater) dish.paintModel.addWater(0.055);
       dish.mixProgress = 0;
       dish.fullyMixed = false;
       capDishAmount(dish);
       // water alone doesn't give a paint color to pick up as brush color,
       // but if there's already a mixed color, keep it selected/current
     } else {
-      paintBlobStamp(dish.activeStamp.x, dish.activeStamp.y, dish.activeStamp.r, selectedColor);
+      if(!dish.paintModel && PaintBlobModel){
+        dish.paintModel = new PaintBlobModel({color:selectedColor, amount:0.8, wetness:1, viscosity:0.84, gloss:0.96});
+      } else if(dish.paintModel){
+        dish.paintModel.addPaint(selectedColor, 0.18);
+        dish.paintModel.color = selectedColor;
+        dish.paintModel.wetness = Math.min(1, dish.paintModel.wetness + 0.025);
+        dish.paintModel.gloss = Math.min(1, dish.paintModel.gloss + 0.025);
+      }
+      paintBlobStamp(dish.activeStamp.x, dish.activeStamp.y, dish.activeStamp.r, selectedColor, dish.paintModel);
       dish.hasPaint = true;
       dish.mixProgress = 0;
       dish.fullyMixed = false;
@@ -1759,7 +1726,7 @@
   function washActiveDish(){
     const dish = dishes[selectedPaletteIndex];
     stageCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
-    dish.activeStamp=null; dish.hasPaint=false; dish.currentColor=null; dish.mixProgress=0; dish.fullyMixed=false;
+    dish.activeStamp=null; dish.hasPaint=false; dish.currentColor=null; dish.mixProgress=0; dish.fullyMixed=false; dish.paintModel=null;
     dish.usedTubeNames = new Set(); dish.hasGlitter = false;
     dish.colorTicks = {}; dish.totalTicks = 0; dish.whiteTicks = 0; dish.waterTicks = 0;
     if(dish.storageCtx) dish.storageCtx.clearRect(0,0,dish.size,dish.size);
