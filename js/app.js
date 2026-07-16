@@ -1010,6 +1010,8 @@
   const PaintBlobModel = window.YubisakiPaint && window.YubisakiPaint.PaintBlob;
   const PaintRendererModel = window.YubisakiRenderer && window.YubisakiRenderer.PaintRenderer;
   const paintRenderer = PaintRendererModel ? new PaintRendererModel(stageCtx) : null;
+  const FingerDynamicsModel = window.YubisakiFinger && window.YubisakiFinger.FingerDynamics;
+  const fingerDynamics = FingerDynamicsModel ? new FingerDynamicsModel() : null;
   const stageBadge = document.getElementById('stageDishBadge');
   const stageStar = document.getElementById('stageDishStar');
   let STAGE_SIZE = 0;
@@ -1530,19 +1532,21 @@
     announceDiscovery(dish);
   }
 
-  function smudgeStep(fromX, fromY, toX, toY){
-    const picked = samplePatchAverage(fromX, fromY, 26) || samplePatchAverage(toX, toY, 26);
+  function smudgeStep(fromX, fromY, toX, toY, motion){
+    const profile = motion || {radius:28, blendAlpha:0.28, marbleAlpha:0.5, ribbonWidth:4};
+    const radius = profile.radius || 28;
+    const picked = samplePatchAverage(fromX, fromY, radius*0.92) || samplePatchAverage(toX, toY, radius*0.92);
     if(!picked) return false;
     const localPicked = samplePatchAverage(fromX, fromY, 10) || picked;
     const ctx = stageCtx;
     const dish = dishes[selectedPaletteIndex];
     ctx.save();
     ctx.globalCompositeOperation = 'multiply';
-    const grad = ctx.createRadialGradient(toX,toY,0,toX,toY,28);
-    grad.addColorStop(0, `rgba(${picked.r|0},${picked.g|0},${picked.b|0},0.28)`);
+    const grad = ctx.createRadialGradient(toX,toY,0,toX,toY,radius);
+    grad.addColorStop(0, `rgba(${picked.r|0},${picked.g|0},${picked.b|0},${profile.blendAlpha})`);
     grad.addColorStop(1, `rgba(${picked.r|0},${picked.g|0},${picked.b|0},0)`);
     ctx.beginPath();
-    ctx.arc(toX,toY,28,0,Math.PI*2);
+    ctx.arc(toX,toY,radius,0,Math.PI*2);
     ctx.fillStyle = grad;
     ctx.fill();
     ctx.restore();
@@ -1557,8 +1561,9 @@
     ctx.save();
     ctx.globalCompositeOperation = 'multiply';
     [-6, 0, 6].forEach(offset=>{
-      ctx.strokeStyle = `rgba(${localPicked.r|0},${localPicked.g|0},${localPicked.b|0},${offset===0?0.5:0.38})`;
-      ctx.lineWidth = offset===0 ? 4 : 2.5;
+      const ribbonAlpha = profile.marbleAlpha * (offset===0 ? 1 : 0.72);
+      ctx.strokeStyle = `rgba(${localPicked.r|0},${localPicked.g|0},${localPicked.b|0},${ribbonAlpha})`;
+      ctx.lineWidth = offset===0 ? profile.ribbonWidth : profile.ribbonWidth*0.62;
       ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(fromX+nx*offset, fromY+ny*offset);
@@ -1578,12 +1583,12 @@
     if(whiteFrac > 0){
       ctx.save();
       ctx.globalCompositeOperation = 'source-over';
-      const wGrad = ctx.createRadialGradient(toX,toY,0,toX,toY,28);
+      const wGrad = ctx.createRadialGradient(toX,toY,0,toX,toY,radius);
       const wAlpha = Math.min(0.5, whiteFrac * 0.6);
       wGrad.addColorStop(0, `rgba(255,255,255,${wAlpha})`);
       wGrad.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.beginPath();
-      ctx.arc(toX,toY,28,0,Math.PI*2);
+      ctx.arc(toX,toY,radius,0,Math.PI*2);
       ctx.fillStyle = wGrad;
       ctx.fill();
       ctx.restore();
@@ -1840,18 +1845,27 @@
   let didDrag = false;
 
   function smudgeSegment(fx, fy, tx, ty){
-    const steps = Math.max(1, Math.ceil(Math.hypot(tx-fx, ty-fy)/8));
+    const distance = Math.hypot(tx-fx, ty-fy);
+    const motion = fingerDynamics ? fingerDynamics.measure(distance) : {
+      radius:28, blendAlpha:0.28, marbleAlpha:0.5, ribbonWidth:4, progressMultiplier:1
+    };
+    const spacing = Math.max(4, motion.radius*0.24);
+    const steps = Math.max(1, Math.ceil(distance/spacing));
     let ok = false;
     for(let i=1;i<=steps;i++){
       const t0=(i-1)/steps, t1=i/steps;
       const stepX = fx+(tx-fx)*t1, stepY = fy+(ty-fy)*t1;
       const stepFromX = fx+(tx-fx)*t0, stepFromY = fy+(ty-fy)*t0;
-      if(smudgeStep(stepFromX, stepFromY, stepX, stepY)) ok = true;
+      if(smudgeStep(stepFromX, stepFromY, stepX, stepY, motion)) ok = true;
     }
     if(ok){
       didDrag = true;
       const dish = dishes[selectedPaletteIndex];
-      dish.mixProgress += Math.hypot(tx-fx, ty-fy);
+      dish.mixProgress += distance * motion.progressMultiplier;
+      if(dish.paintModel){
+        dish.paintModel.mixLevel = Math.min(1, dish.mixProgress/(STAGE_SIZE*1.4));
+        dish.paintModel.viscosity = Math.max(0.22, dish.paintModel.viscosity - motion.speed01*0.0025);
+      }
       if(dish.mixProgress > STAGE_SIZE*1.4 && !dish.fullyMixed){
         finishMixToSingleColor(dish);
       }
@@ -1865,6 +1879,7 @@
   stageEl.addEventListener('pointerdown', e=>{
     if(e.pointerType==='touch') return;
     pointers.set(e.pointerId, { x:e.clientX, y:e.clientY, onDish: isOnStageDish(e.target) });
+    if(fingerDynamics) fingerDynamics.reset();
     didDrag = false;
   });
   stageEl.addEventListener('pointermove', e=>{
@@ -1947,6 +1962,7 @@
           }
         }
       }
+      if(!lastSingleTouch && fingerDynamics) fingerDynamics.reset();
       lastSingleTouch = { x:t.clientX, y:t.clientY };
     } else {
       lastSingleTouch = null;
