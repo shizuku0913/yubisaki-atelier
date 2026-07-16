@@ -32,3 +32,10 @@ GitHub Pages: `https://shizuku0913.github.io/yubisaki-atelier/`
 - Added coloured ribbon-based marble smudging.
 - Kept marble patterns visible longer before final uniform mixing.
 - Changed the service worker to network-first and bumped the cache version.
+
+
+## v1.4.0 Local Paint Feel
+- 指の下だけを局所的に押し潰すオーバーレイを追加
+- 混ぜる方向へ絵の具が伸びる局所変形
+- 指を離した時に、にゅるっと戻る減衰アニメーション
+- 対応端末では短い振動フィードバックを追加

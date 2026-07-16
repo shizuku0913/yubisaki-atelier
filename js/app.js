@@ -1020,9 +1020,92 @@
   const paintFeelRing = document.createElement('div');
   paintFeelRing.className = 'paint-feel-ring';
   stageDish.appendChild(paintFeelRing);
+
+  // A transparent overlay used for local, non-destructive deformation.  The
+  // previous version scaled the whole palette, which felt more like a camera
+  // zoom than soft paint.  This overlay samples only the paint beneath the
+  // finger and squashes / stretches that patch in place.
+  const feelCanvas = document.createElement('canvas');
+  feelCanvas.className = 'paint-feel-canvas';
+  stageDish.appendChild(feelCanvas);
+  const feelCtx = feelCanvas.getContext('2d');
   let feelReleaseTimer = null;
   let lastFeelPoint = null;
   let lastWaterBloomAt = 0;
+  let lastHapticAt = 0;
+
+  function resizeFeelCanvas(){
+    const rect = stageCanvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    feelCanvas.width = Math.max(1,Math.round(rect.width*dpr));
+    feelCanvas.height = Math.max(1,Math.round(rect.height*dpr));
+    feelCanvas.style.width = rect.width+'px';
+    feelCanvas.style.height = rect.height+'px';
+    feelCtx.setTransform(dpr,0,0,dpr,0,0);
+  }
+
+  function clearFeelCanvas(){
+    const rect = feelCanvas.getBoundingClientRect();
+    feelCtx.clearRect(0,0,rect.width,rect.height);
+  }
+
+  function softHaptic(pattern){
+    const now=performance.now();
+    if(now-lastHapticAt<90) return;
+    lastHapticAt=now;
+    try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(_e){}
+  }
+
+  function drawLocalDeformation(clientX,clientY,mode='press',dx=0,dy=0){
+    const rect=stageCanvas.getBoundingClientRect();
+    if(rect.width<2) return;
+    resizeFeelCanvas();
+    clearFeelCanvas();
+    const x=clientX-rect.left, y=clientY-rect.top;
+    const dpr=stageDpr || window.devicePixelRatio || 1;
+    const radius=mode==='mix' ? 34 : 30;
+    const sx=Math.max(0,x-radius), sy=Math.max(0,y-radius);
+    const sw=Math.min(radius*2,rect.width-sx), sh=Math.min(radius*2,rect.height-sy);
+    if(sw<=1||sh<=1) return;
+
+    const patch=document.createElement('canvas');
+    patch.width=Math.max(1,Math.round(sw*dpr));
+    patch.height=Math.max(1,Math.round(sh*dpr));
+    patch.getContext('2d').drawImage(stageCanvas,
+      Math.round(sx*dpr),Math.round(sy*dpr),patch.width,patch.height,
+      0,0,patch.width,patch.height);
+
+    feelCtx.save();
+    feelCtx.beginPath();
+    feelCtx.arc(x,y,radius,0,Math.PI*2);
+    feelCtx.clip();
+    if(mode==='press'){
+      // Flatten the centre and push two small bulges sideways.
+      feelCtx.globalAlpha=.96;
+      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
+        x-radius*1.08,y-radius*.72,radius*2.16,radius*1.44);
+      feelCtx.globalAlpha=.42;
+      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
+        x-radius*1.18,y-radius*.48,radius*.72,radius*.96);
+      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
+        x+radius*.46,y-radius*.48,radius*.72,radius*.96);
+    }else{
+      const speed=Math.min(1,Math.hypot(dx,dy)/18);
+      const angle=Math.atan2(dy,dx);
+      feelCtx.translate(x,y); feelCtx.rotate(angle);
+      feelCtx.globalAlpha=.84;
+      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
+        -radius*(1.0+speed*.42),-radius*.52,radius*(2.0+speed*.84),radius*1.04);
+    }
+    feelCtx.restore();
+
+    // Wet highlight around the dent makes the displacement read as glossy paint.
+    const g=feelCtx.createRadialGradient(x-radius*.28,y-radius*.35,1,x,y,radius);
+    g.addColorStop(0,'rgba(255,255,255,.42)');
+    g.addColorStop(.45,'rgba(255,255,255,.08)');
+    g.addColorStop(1,'rgba(255,255,255,0)');
+    feelCtx.fillStyle=g; feelCtx.beginPath();feelCtx.arc(x,y,radius,0,Math.PI*2);feelCtx.fill();
+  }
 
   function setFeelPoint(clientX, clientY){
     const r = stageCanvas.getBoundingClientRect();
@@ -1039,10 +1122,12 @@
   function beginPaintPress(clientX, clientY){
     clearTimeout(feelReleaseTimer);
     setFeelPoint(clientX,clientY);
+    drawLocalDeformation(clientX,clientY,'press');
+    softHaptic(12);
     stageDish.classList.remove('paint-release');
     stageDish.classList.add('paint-press');
-    stageDish.style.setProperty('--feel-sx','.975');
-    stageDish.style.setProperty('--feel-sy','.925');
+    stageDish.style.setProperty('--feel-sx','.992');
+    stageDish.style.setProperty('--feel-sy','.982');
   }
 
   function updatePaintFeel(clientX, clientY, prevX, prevY){
@@ -1050,11 +1135,13 @@
     const dx=clientX-prevX, dy=clientY-prevY;
     const speed=Math.min(1,Math.hypot(dx,dy)/18);
     const angle=Math.atan2(dy,dx)*180/Math.PI;
+    drawLocalDeformation(clientX,clientY,'mix',dx,dy);
+    if(speed>.42) softHaptic(7);
     stageDish.classList.remove('paint-press');
     stageDish.classList.add('paint-mixing');
-    stageDish.style.setProperty('--feel-rot',(Math.sin(angle*Math.PI/180)*1.35).toFixed(2)+'deg');
-    stageDish.style.setProperty('--feel-sx',(1.01+speed*.045).toFixed(3));
-    stageDish.style.setProperty('--feel-sy',(.995-speed*.045).toFixed(3));
+    stageDish.style.setProperty('--feel-rot',(Math.sin(angle*Math.PI/180)*.45).toFixed(2)+'deg');
+    stageDish.style.setProperty('--feel-sx',(1.002+speed*.012).toFixed(3));
+    stageDish.style.setProperty('--feel-sy',(.999-speed*.009).toFixed(3));
   }
 
   function releasePaintFeel(){
@@ -1062,13 +1149,22 @@
     stageDish.classList.remove('paint-release');
     void stageDish.offsetWidth;
     stageDish.classList.add('paint-release');
-    feelReleaseTimer=setTimeout(()=>stageDish.classList.remove('paint-release'),580);
+    feelCanvas.classList.remove('feel-releasing');
+    void feelCanvas.offsetWidth;
+    feelCanvas.classList.add('feel-releasing');
+    softHaptic([8,28,5]);
+    feelReleaseTimer=setTimeout(()=>{
+      stageDish.classList.remove('paint-release');
+      feelCanvas.classList.remove('feel-releasing');
+      clearFeelCanvas();
+    },620);
   }
 
   function triggerWaterBloom(cx,cy,r){
     const now=performance.now();
     if(now-lastWaterBloomAt<380) return;
     lastWaterBloomAt=now;
+    softHaptic([5,45,5]);
     stageDish.style.setProperty('--ring-x',cx+'px');
     stageDish.style.setProperty('--ring-y',cy+'px');
     stageDish.style.setProperty('--ring-size',Math.max(16,r*.55)+'px');
@@ -1128,7 +1224,7 @@
       d.storage = newStorage; d.storageCtx = nctx; d.size = STAGE_SIZE; d.dpr = dpr;
     });
   }
-  window.addEventListener('resize', ()=>{ setupStageCanvas(); });
+  window.addEventListener('resize', ()=>{ setupStageCanvas(); resizeFeelCanvas(); });
 
   function selectPalette(index){
     // save current stage pixels into the palette we're leaving
