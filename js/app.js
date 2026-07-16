@@ -460,6 +460,8 @@
   let selectedPaletteIndex = 0;
   let brushColor = null;
   let brushHasGlitter = false;
+  let brushWetness = 0.28;
+  let brushViscosity = 0.82;
   let selectedTubeReady = false;
 
   function hexToRgb(hex){
@@ -1383,6 +1385,16 @@
   }
   window.addEventListener('resize', ()=>{ setupStageCanvas(); resizeFeelCanvas(); });
 
+  function syncBrushMaterial(dish){
+    if(!dish) return;
+    const pigment = dish.totalTicks || 0;
+    const water = dish.waterTicks || 0;
+    const total = pigment + water;
+    const waterFrac = total > 0 ? water / total : 0;
+    brushWetness = Math.max(0.08, Math.min(1, dish.paintModel?.wetness ?? (0.22 + waterFrac*0.78)));
+    brushViscosity = Math.max(0.12, Math.min(1, dish.paintModel?.viscosity ?? (0.86 - waterFrac*0.62)));
+  }
+
   function selectPalette(index){
     // save current stage pixels into the palette we're leaving
     const prev = dishes[selectedPaletteIndex];
@@ -1411,6 +1423,7 @@
       updateBrushIndicator();
     }
     brushHasGlitter = !!dish.hasGlitter;
+    syncBrushMaterial(dish);
     showToast('パレット' + (index+1) + 'をえらんだよ');
     renderMiniPalette();
   }
@@ -1429,6 +1442,7 @@
     if(dish === dishes[selectedPaletteIndex]){
       brushColor = color;
       brushHasGlitter = !!dish.hasGlitter;
+      syncBrushMaterial(dish);
       updateBrushIndicator();
     }
     renderMiniPalette();
@@ -2453,22 +2467,98 @@
     }
   }
 
+  function paintBrushStamp(x, y, angle, pressure = 1){
+    if(!brushColor) return;
+    const wet = Math.max(0.05, Math.min(1, brushWetness));
+    const visc = Math.max(0.1, Math.min(1, brushViscosity));
+    const radius = brushSize * 0.5 * (0.9 + pressure*0.12);
+    const alpha = Math.max(0.34, 0.96 - wet*0.48);
+
+    dctx.save();
+    dctx.translate(x,y);
+    dctx.rotate(angle || 0);
+    dctx.globalCompositeOperation='source-over';
+
+    // Main body: wet paint spreads wider and becomes more translucent.
+    dctx.globalAlpha=alpha;
+    const body=dctx.createRadialGradient(-radius*.28,-radius*.35,1,0,0,radius*(1+wet*.36));
+    body.addColorStop(0, lighten(brushColor, Math.min(.28,.10+wet*.16)));
+    body.addColorStop(.55, brushColor);
+    body.addColorStop(1, darken(brushColor, Math.max(.04,.13-visc*.07)));
+    dctx.fillStyle=body;
+    dctx.beginPath();
+    dctx.ellipse(0,0,radius*(1+wet*.42),radius*(.78+visc*.22),0,0,Math.PI*2);
+    dctx.fill();
+
+    // Bristle grooves make thick paint read as dragged material, not a flat line.
+    const grooves = brushSize >= 20 ? 5 : 3;
+    dctx.globalAlpha=.16 + visc*.12;
+    dctx.strokeStyle=lighten(brushColor,.38);
+    dctx.lineCap='round';
+    dctx.lineWidth=Math.max(.7,brushSize*.045);
+    for(let i=0;i<grooves;i++){
+      const oy=(i-(grooves-1)/2)*(radius*.28);
+      dctx.beginPath();
+      dctx.moveTo(-radius*.9,oy);
+      dctx.quadraticCurveTo(0,oy+Math.sin((x+y+i)*.08)*radius*.12,radius*.9,oy);
+      dctx.stroke();
+    }
+
+    // Gloss highlight fades as paint gets watery.
+    dctx.globalAlpha=.20 + visc*.28;
+    dctx.fillStyle='rgba(255,255,255,.72)';
+    dctx.beginPath();
+    dctx.ellipse(-radius*.28,-radius*.30,radius*.28,radius*.11,-.35,0,Math.PI*2);
+    dctx.fill();
+    dctx.restore();
+
+    // Water-rich paint blooms softly into the paper around the main mark.
+    if(wet>.38){
+      dctx.save();
+      dctx.globalCompositeOperation='source-over';
+      dctx.globalAlpha=Math.min(.18,(wet-.35)*.26);
+      const spread=radius*(1.25+wet*.8);
+      const wash=dctx.createRadialGradient(x,y,radius*.25,x,y,spread);
+      const rgb=hexToRgb(brushColor);
+      wash.addColorStop(0,`rgba(${rgb.r},${rgb.g},${rgb.b},.30)`);
+      wash.addColorStop(1,`rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+      dctx.fillStyle=wash;
+      dctx.beginPath(); dctx.arc(x,y,spread,0,Math.PI*2); dctx.fill();
+      dctx.restore();
+    }
+
+    if(brushHasGlitter) sprinkleGlitter(x, y, radius);
+  }
+
+  function paintBrushSegment(from,to){
+    const dx=to.x-from.x, dy=to.y-from.y;
+    const distance=Math.hypot(dx,dy);
+    if(distance<.1) return;
+    const angle=Math.atan2(dy,dx);
+    const spacing=Math.max(1.4,brushSize*(.10 + brushWetness*.08));
+    const steps=Math.max(1,Math.ceil(distance/spacing));
+    for(let i=1;i<=steps;i++){
+      const t=i/steps;
+      const x=from.x+dx*t;
+      const y=from.y+dy*t;
+      const wobble=Math.sin((x+y+i)*.13)*brushSize*.025*brushViscosity;
+      paintBrushStamp(x-Math.sin(angle)*wobble,y+Math.cos(angle)*wobble,angle,1);
+    }
+  }
+
   function startStroke(x, y){
     if(!brushColor) return false;
     pushUndoState();
     drawing = true;
     lastPt = {x, y};
-    dctx.beginPath(); dctx.arc(x, y, brushSize/2, 0, Math.PI*2);
-    dctx.fillStyle = brushColor; dctx.fill();
-    if(brushHasGlitter) sprinkleGlitter(x, y, brushSize*0.5);
+    paintBrushStamp(x,y,0,1);
     return true;
   }
   function continueStroke(x, y){
-    if(!drawing) return;
-    dctx.strokeStyle = brushColor; dctx.lineWidth = brushSize;
-    dctx.beginPath(); dctx.moveTo(lastPt.x, lastPt.y); dctx.lineTo(x, y); dctx.stroke();
-    if(brushHasGlitter) sprinkleGlitter(x, y, brushSize*0.5);
-    lastPt = {x, y};
+    if(!drawing || !lastPt) return;
+    const next={x,y};
+    paintBrushSegment(lastPt,next);
+    lastPt = next;
   }
   function stopDraw(){ drawing=false; lastPt=null; }
 
