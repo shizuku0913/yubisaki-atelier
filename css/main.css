@@ -836,17 +836,18 @@
 }
 .paint-feel-ring::before{
   content:""; position:absolute; width:var(--ring-size,22px); height:var(--ring-size,22px);
-  left:calc(var(--ring-x,50%) - var(--ring-size,22px)/2);
-  top:calc(var(--ring-y,50%) - var(--ring-size,22px)/2);
-  border-radius:50%; border:3px solid rgba(255,255,255,.55);
-  box-shadow:0 0 0 6px rgba(58,168,224,.12), inset 0 0 12px rgba(255,255,255,.35);
+  left:var(--ring-x,50%); top:var(--ring-y,50%);
+  transform:translate(-50%,-50%) scale(.18);
+  transform-origin:50% 50%;
+  border-radius:50%; border:3px solid rgba(255,255,255,.72);
+  box-shadow:0 0 0 7px rgba(58,168,224,.18), inset 0 0 16px rgba(255,255,255,.52);
   opacity:0;
 }
 .stage-dish.water-bloom .paint-feel-ring::before{animation:waterBloom 1150ms ease-out both}
 @keyframes waterBloom{
-  0%{transform:scale(.18);opacity:.92;filter:blur(0)}
-  45%{opacity:.52}
-  100%{transform:scale(7.2);opacity:0;filter:blur(2px)}
+  0%{transform:translate(-50%,-50%) scale(.18);opacity:.96;filter:blur(0)}
+  40%{opacity:.64}
+  100%{transform:translate(-50%,-50%) scale(8.4);opacity:0;filter:blur(2.4px)}
 }
 .stage-dish.paint-mixing .dish-base{animation:mixBodyPulse 420ms ease-in-out infinite alternate}
 @keyframes mixBodyPulse{from{filter:brightness(1)}to{filter:brightness(1.035)}}
@@ -858,8 +859,9 @@
   left:8px; top:8px;
   border-radius:50%;
   pointer-events:none;
-  z-index:3;
+  z-index:5;
   opacity:1;
+  mix-blend-mode:normal;
   transform-origin:50% 50%;
   will-change:transform,opacity,filter;
 }
@@ -881,3 +883,9 @@
 @media (prefers-reduced-motion: reduce){
   .paint-feel-canvas.feel-releasing{animation-duration:1ms}
 }
+
+/* v1.4.1 stronger tactile feedback */
+.stage-dish.paint-press .paint-feel-canvas{filter:drop-shadow(0 5px 5px rgba(0,0,0,.18)) saturate(1.08)}
+.stage-dish.paint-mixing .paint-feel-canvas{filter:drop-shadow(0 4px 4px rgba(0,0,0,.14)) saturate(1.1)}
+.stage-dish.haptic-flash .dish-base{animation:hapticFlash 130ms ease-out both}
+@keyframes hapticFlash{0%{filter:brightness(1)}45%{filter:brightness(1.12)}100%{filter:brightness(1)}}

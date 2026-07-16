@@ -39,3 +39,11 @@ GitHub Pages: `https://shizuku0913.github.io/yubisaki-atelier/`
 - 混ぜる方向へ絵の具が伸びる局所変形
 - 指を離した時に、にゅるっと戻る減衰アニメーション
 - 対応端末では短い振動フィードバックを追加
+
+
+## v1.4.1
+- Fixed local deformation canvas being cleared on every move.
+- Strengthened press dent, displaced rim, sticky stretch and release wobble.
+- Fixed CSS water-bloom positioning on mobile browsers.
+- Added animated paint-canvas water diffusion and a visual haptic fallback.
+- Note: vibration depends on browser/device support; iOS browsers do not support `navigator.vibrate`.

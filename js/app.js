@@ -1037,10 +1037,16 @@
   function resizeFeelCanvas(){
     const rect = stageCanvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    feelCanvas.width = Math.max(1,Math.round(rect.width*dpr));
-    feelCanvas.height = Math.max(1,Math.round(rect.height*dpr));
-    feelCanvas.style.width = rect.width+'px';
-    feelCanvas.style.height = rect.height+'px';
+    const w = Math.max(1,Math.round(rect.width*dpr));
+    const h = Math.max(1,Math.round(rect.height*dpr));
+    // Assigning width/height clears the canvas. Only resize when dimensions
+    // really changed; otherwise the deformation could disappear every frame.
+    if(feelCanvas.width !== w || feelCanvas.height !== h){
+      feelCanvas.width = w;
+      feelCanvas.height = h;
+      feelCanvas.style.width = rect.width+'px';
+      feelCanvas.style.height = rect.height+'px';
+    }
     feelCtx.setTransform(dpr,0,0,dpr,0,0);
   }
 
@@ -1051,9 +1057,20 @@
 
   function softHaptic(pattern){
     const now=performance.now();
-    if(now-lastHapticAt<90) return;
+    if(now-lastHapticAt<90) return false;
     lastHapticAt=now;
-    try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(_e){}
+    let vibrated=false;
+    try{
+      if(typeof navigator.vibrate === 'function'){
+        vibrated = navigator.vibrate(pattern) !== false;
+      }
+    }catch(_e){}
+    // Visible fallback for browsers/devices that do not expose vibration.
+    stageDish.classList.remove('haptic-flash');
+    void stageDish.offsetWidth;
+    stageDish.classList.add('haptic-flash');
+    setTimeout(()=>stageDish.classList.remove('haptic-flash'),150);
+    return vibrated;
   }
 
   function drawLocalDeformation(clientX,clientY,mode='press',dx=0,dy=0){
@@ -1063,7 +1080,7 @@
     clearFeelCanvas();
     const x=clientX-rect.left, y=clientY-rect.top;
     const dpr=stageDpr || window.devicePixelRatio || 1;
-    const radius=mode==='mix' ? 34 : 30;
+    const radius=mode==='mix' ? 40 : 36;
     const sx=Math.max(0,x-radius), sy=Math.max(0,y-radius);
     const sw=Math.min(radius*2,rect.width-sx), sh=Math.min(radius*2,rect.height-sy);
     if(sw<=1||sh<=1) return;
@@ -1071,38 +1088,71 @@
     const patch=document.createElement('canvas');
     patch.width=Math.max(1,Math.round(sw*dpr));
     patch.height=Math.max(1,Math.round(sh*dpr));
-    patch.getContext('2d').drawImage(stageCanvas,
+    const pctx=patch.getContext('2d');
+    pctx.drawImage(stageCanvas,
       Math.round(sx*dpr),Math.round(sy*dpr),patch.width,patch.height,
       0,0,patch.width,patch.height);
 
+    // Do not fake a deformation on empty porcelain.
+    const probe=pctx.getImageData(0,0,patch.width,patch.height).data;
+    let alpha=0;
+    for(let i=3;i<probe.length;i+=32) alpha+=probe[i];
+    if(alpha<180) return;
+
     feelCtx.save();
     feelCtx.beginPath();
-    feelCtx.arc(x,y,radius,0,Math.PI*2);
+    feelCtx.arc(x,y,radius*1.18,0,Math.PI*2);
     feelCtx.clip();
+
     if(mode==='press'){
-      // Flatten the centre and push two small bulges sideways.
-      feelCtx.globalAlpha=.96;
+      // Centre dent: flatten sampled paint vertically and widen it sideways.
+      feelCtx.globalAlpha=.98;
       feelCtx.drawImage(patch,0,0,patch.width,patch.height,
-        x-radius*1.08,y-radius*.72,radius*2.16,radius*1.44);
-      feelCtx.globalAlpha=.42;
-      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
-        x-radius*1.18,y-radius*.48,radius*.72,radius*.96);
-      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
-        x+radius*.46,y-radius*.48,radius*.72,radius*.96);
+        x-radius*1.20,y-radius*.66,radius*2.40,radius*1.32);
+
+      // Paint displaced by the fingertip forms a bright, raised rim.
+      [-1,1].forEach(side=>{
+        feelCtx.save();
+        feelCtx.globalAlpha=.78;
+        feelCtx.beginPath();
+        feelCtx.ellipse(x+side*radius*.72,y,radius*.48,radius*.82,0,0,Math.PI*2);
+        feelCtx.clip();
+        feelCtx.drawImage(patch,0,0,patch.width,patch.height,
+          x+side*radius*.34-radius*.5,y-radius*.82,radius,radius*1.64);
+        feelCtx.restore();
+      });
+
+      // A translucent centre shadow makes the indentation unmistakable.
+      const dent=feelCtx.createRadialGradient(x,y,2,x,y,radius*.75);
+      dent.addColorStop(0,'rgba(35,25,18,.18)');
+      dent.addColorStop(.45,'rgba(35,25,18,.07)');
+      dent.addColorStop(1,'rgba(35,25,18,0)');
+      feelCtx.fillStyle=dent; feelCtx.beginPath(); feelCtx.arc(x,y,radius*.78,0,Math.PI*2); feelCtx.fill();
     }else{
-      const speed=Math.min(1,Math.hypot(dx,dy)/18);
+      const dist=Math.hypot(dx,dy);
+      const speed=Math.min(1,dist/22);
       const angle=Math.atan2(dy,dx);
       feelCtx.translate(x,y); feelCtx.rotate(angle);
-      feelCtx.globalAlpha=.84;
+
+      // Long sticky body in movement direction.
+      feelCtx.globalAlpha=.92;
       feelCtx.drawImage(patch,0,0,patch.width,patch.height,
-        -radius*(1.0+speed*.42),-radius*.52,radius*(2.0+speed*.84),radius*1.04);
+        -radius*(1.12+speed*.42),-radius*.58,
+        radius*(2.24+speed*1.18),radius*1.16);
+
+      // Two offset lobes create the "ぐにぐに" sideways wobble.
+      const wobble=Math.sin(performance.now()/55)*radius*.22;
+      feelCtx.globalAlpha=.56;
+      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
+        -radius*.72,-radius*.48+wobble,radius*1.55,radius*.72);
+      feelCtx.drawImage(patch,0,0,patch.width,patch.height,
+        -radius*.35,-radius*.24-wobble,radius*1.42,radius*.66);
     }
     feelCtx.restore();
 
-    // Wet highlight around the dent makes the displacement read as glossy paint.
-    const g=feelCtx.createRadialGradient(x-radius*.28,y-radius*.35,1,x,y,radius);
-    g.addColorStop(0,'rgba(255,255,255,.42)');
-    g.addColorStop(.45,'rgba(255,255,255,.08)');
+    const g=feelCtx.createRadialGradient(x-radius*.3,y-radius*.4,1,x,y,radius);
+    g.addColorStop(0,'rgba(255,255,255,.64)');
+    g.addColorStop(.3,'rgba(255,255,255,.18)');
     g.addColorStop(1,'rgba(255,255,255,0)');
     feelCtx.fillStyle=g; feelCtx.beginPath();feelCtx.arc(x,y,radius,0,Math.PI*2);feelCtx.fill();
   }
@@ -1164,15 +1214,38 @@
     const now=performance.now();
     if(now-lastWaterBloomAt<380) return;
     lastWaterBloomAt=now;
-    softHaptic([5,45,5]);
+    softHaptic([6,42,6]);
     stageDish.style.setProperty('--ring-x',cx+'px');
     stageDish.style.setProperty('--ring-y',cy+'px');
-    stageDish.style.setProperty('--ring-size',Math.max(16,r*.55)+'px');
+    stageDish.style.setProperty('--ring-size',Math.max(18,r*.6)+'px');
     stageDish.classList.remove('water-bloom');
     void stageDish.offsetWidth;
     stageDish.classList.add('water-bloom');
-    setTimeout(()=>stageDish.classList.remove('water-bloom'),1180);
+
+    // Animate a real translucent bloom on the paint canvas, not only a CSS ring.
+    const startTime=performance.now();
+    const duration=1050;
+    const base=samplePatchAverage(cx,cy,12);
+    function frame(t){
+      const q=Math.min(1,(t-startTime)/duration);
+      const ease=1-Math.pow(1-q,3);
+      const rr=Math.max(10,r*.45)+ease*Math.max(44,r*2.4);
+      stageCtx.save();
+      stageCtx.globalCompositeOperation='source-over';
+      const col=base || {r:170,g:215,b:240};
+      const grad=stageCtx.createRadialGradient(cx,cy,rr*.12,cx,cy,rr);
+      grad.addColorStop(0,`rgba(255,255,255,${0.075*(1-q)})`);
+      grad.addColorStop(.58,`rgba(${col.r|0},${col.g|0},${col.b|0},${0.035*(1-q)})`);
+      grad.addColorStop(.88,`rgba(${col.r|0},${col.g|0},${col.b|0},${0.09*(1-q)})`);
+      grad.addColorStop(1,'rgba(255,255,255,0)');
+      stageCtx.fillStyle=grad; stageCtx.beginPath(); stageCtx.arc(cx,cy,rr,0,Math.PI*2); stageCtx.fill();
+      stageCtx.restore();
+      if(q<1) requestAnimationFrame(frame);
+      else stageDish.classList.remove('water-bloom');
+    }
+    requestAnimationFrame(frame);
   }
+
   let STAGE_SIZE = 0;
   let stageDpr = window.devicePixelRatio || 1;
 
