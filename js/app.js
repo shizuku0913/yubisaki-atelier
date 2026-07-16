@@ -1014,6 +1014,69 @@
   const fingerDynamics = FingerDynamicsModel ? new FingerDynamicsModel() : null;
   const stageBadge = document.getElementById('stageDishBadge');
   const stageStar = document.getElementById('stageDishStar');
+
+  // Paint Feel overlay: gives immediate tactile feedback while the pixel
+  // simulation catches up. The canvas itself squashes, stretches and rebounds.
+  const paintFeelRing = document.createElement('div');
+  paintFeelRing.className = 'paint-feel-ring';
+  stageDish.appendChild(paintFeelRing);
+  let feelReleaseTimer = null;
+  let lastFeelPoint = null;
+  let lastWaterBloomAt = 0;
+
+  function setFeelPoint(clientX, clientY){
+    const r = stageCanvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, clientX-r.left));
+    const y = Math.max(0, Math.min(r.height, clientY-r.top));
+    stageDish.style.setProperty('--ring-x', x+'px');
+    stageDish.style.setProperty('--ring-y', y+'px');
+    const nx = (x/r.width)-0.5, ny=(y/r.height)-0.5;
+    stageDish.style.setProperty('--feel-x', (-nx*5).toFixed(2)+'px');
+    stageDish.style.setProperty('--feel-y', (-ny*5).toFixed(2)+'px');
+    lastFeelPoint = {x,y};
+  }
+
+  function beginPaintPress(clientX, clientY){
+    clearTimeout(feelReleaseTimer);
+    setFeelPoint(clientX,clientY);
+    stageDish.classList.remove('paint-release');
+    stageDish.classList.add('paint-press');
+    stageDish.style.setProperty('--feel-sx','.975');
+    stageDish.style.setProperty('--feel-sy','.925');
+  }
+
+  function updatePaintFeel(clientX, clientY, prevX, prevY){
+    setFeelPoint(clientX,clientY);
+    const dx=clientX-prevX, dy=clientY-prevY;
+    const speed=Math.min(1,Math.hypot(dx,dy)/18);
+    const angle=Math.atan2(dy,dx)*180/Math.PI;
+    stageDish.classList.remove('paint-press');
+    stageDish.classList.add('paint-mixing');
+    stageDish.style.setProperty('--feel-rot',(Math.sin(angle*Math.PI/180)*1.35).toFixed(2)+'deg');
+    stageDish.style.setProperty('--feel-sx',(1.01+speed*.045).toFixed(3));
+    stageDish.style.setProperty('--feel-sy',(.995-speed*.045).toFixed(3));
+  }
+
+  function releasePaintFeel(){
+    stageDish.classList.remove('paint-press','paint-mixing');
+    stageDish.classList.remove('paint-release');
+    void stageDish.offsetWidth;
+    stageDish.classList.add('paint-release');
+    feelReleaseTimer=setTimeout(()=>stageDish.classList.remove('paint-release'),580);
+  }
+
+  function triggerWaterBloom(cx,cy,r){
+    const now=performance.now();
+    if(now-lastWaterBloomAt<380) return;
+    lastWaterBloomAt=now;
+    stageDish.style.setProperty('--ring-x',cx+'px');
+    stageDish.style.setProperty('--ring-y',cy+'px');
+    stageDish.style.setProperty('--ring-size',Math.max(16,r*.55)+'px');
+    stageDish.classList.remove('water-bloom');
+    void stageDish.offsetWidth;
+    stageDish.classList.add('water-bloom');
+    setTimeout(()=>stageDish.classList.remove('water-bloom'),1180);
+  }
   let STAGE_SIZE = 0;
   let stageDpr = window.devicePixelRatio || 1;
 
@@ -1648,17 +1711,33 @@
 
   function waterBlobStamp(cx, cy, r){
     const ctx = stageCtx;
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    const grad = ctx.createRadialGradient(cx,cy,0,cx,cy,r);
-    grad.addColorStop(0, 'rgba(210,240,255,0.5)');
-    grad.addColorStop(0.7, 'rgba(210,240,255,0.28)');
-    grad.addColorStop(1, 'rgba(210,240,255,0)');
-    ctx.beginPath();
-    ctx.arc(cx,cy,r,0,Math.PI*2);
-    ctx.fillStyle = grad;
-    ctx.fill();
-    ctx.restore();
+    triggerWaterBloom(cx,cy,r);
+
+    // A short time-based bloom: pigment is sampled at the drop point and
+    // carried outward in soft translucent rings instead of appearing at once.
+    const sampled = samplePatchAverage(cx,cy,Math.max(8,r*.35));
+    const pigment = sampled || {r:210,g:240,b:255};
+    const started = performance.now();
+    const duration = 1050;
+    function frame(now){
+      const t=Math.min(1,(now-started)/duration);
+      const eased=1-Math.pow(1-t,3);
+      const rr=Math.max(3,r*(.18+eased*.95));
+      ctx.save();
+      ctx.globalCompositeOperation='source-over';
+      const alpha=(1-t)*.075;
+      const grad=ctx.createRadialGradient(cx,cy,rr*.12,cx,cy,rr);
+      grad.addColorStop(0,`rgba(${pigment.r|0},${pigment.g|0},${pigment.b|0},${alpha*.25})`);
+      grad.addColorStop(.62,`rgba(${pigment.r|0},${pigment.g|0},${pigment.b|0},${alpha})`);
+      grad.addColorStop(1,`rgba(${pigment.r|0},${pigment.g|0},${pigment.b|0},0)`);
+      ctx.beginPath();ctx.arc(cx,cy,rr,0,Math.PI*2);ctx.fillStyle=grad;ctx.fill();
+      // pale wet center keeps the visible water cue without blue paint
+      ctx.globalAlpha=(1-t)*.12;
+      ctx.beginPath();ctx.arc(cx,cy,rr*.45,0,Math.PI*2);ctx.fillStyle='#ffffff';ctx.fill();
+      ctx.restore();
+      if(t<1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
   }
 
   // Keeps a palette's total "amount" of paint (all pigment ticks + water
@@ -1912,12 +1991,14 @@
     pointers.set(e.pointerId, { x:e.clientX, y:e.clientY, onDish: isOnStageDish(e.target) });
     if(fingerDynamics) fingerDynamics.reset();
     didDrag = false;
+    if(isOnStageDish(e.target)) beginPaintPress(e.clientX,e.clientY);
   });
   stageEl.addEventListener('pointermove', e=>{
     if(e.pointerType==='touch') return;
     const p = pointers.get(e.pointerId);
     if(!p) return;
     const prevX=p.x, prevY=p.y; p.x=e.clientX; p.y=e.clientY;
+    if(p.onDish) updatePaintFeel(e.clientX,e.clientY,prevX,prevY);
     if(pointers.size===1 && p.onDish ){
       const rect = stageCanvas.getBoundingClientRect();
       const scaleX = STAGE_SIZE/rect.width, scaleY = STAGE_SIZE/rect.height;
@@ -1928,6 +2009,7 @@
     if(e.pointerType==='touch') return;
     if(didDrag){ showToast('いろがまざったよ！'); didDrag=false; }
     pointers.delete(e.pointerId);
+    releasePaintFeel();
   }
   stageEl.addEventListener('pointerup', endPointer);
   stageEl.addEventListener('pointercancel', endPointer);
@@ -1979,7 +2061,9 @@
       const t = e.touches[0];
       const target = document.elementFromPoint(t.clientX, t.clientY);
       const onDish = isOnStageDish(target);
+      if(onDish && !lastSingleTouch) beginPaintPress(t.clientX,t.clientY);
       if(onDish && lastSingleTouch){
+        updatePaintFeel(t.clientX,t.clientY,lastSingleTouch.x,lastSingleTouch.y);
         const dish = dishes[selectedPaletteIndex];
         if(!dish.fullyMixed){
           const rect = stageCanvas.getBoundingClientRect();
@@ -2002,6 +2086,7 @@
       if(pinchLoopId){ clearInterval(pinchLoopId); pinchLoopId=null; }
       pulseTubeSqueezeStop();
       dishes.forEach(d=> d.activeStamp=null);
+      releasePaintFeel();
     }
   }
   document.addEventListener('touchstart', updateTouchPts, {passive:true});
