@@ -1532,124 +1532,101 @@
     announceDiscovery(dish);
   }
 
- function smudgeStep(fromX, fromY, toX, toY) {
-  const radius = 25;
-  const dpr = stageDpr || window.devicePixelRatio || 1;
+ function smudgeStep(fromX, fromY, toX, toY, motion = {}) {
+    const dx = toX - fromX;
+    const dy = toY - fromY;
+    const distance = Math.hypot(dx, dy);
+    if (distance < 0.15) return false;
 
-  // 指を置いた場所の絵の具を切り取る
-  const sourceX = Math.max(0, Math.round((fromX - radius) * dpr));
-  const sourceY = Math.max(0, Math.round((fromY - radius) * dpr));
-  const sourceSize = Math.round(radius * 2 * dpr);
+    const radius = Math.max(18, Math.min(34, motion.radius || 26));
+    const ribbonAlpha = Math.max(0.22, Math.min(0.72, motion.marbleAlpha || 0.52));
+    const blendAlpha = Math.max(0.08, Math.min(0.30, motion.blendAlpha || 0.18));
+    const ribbonWidth = Math.max(2.2, Math.min(6, motion.ribbonWidth || 4));
+    const dpr = stageDpr || window.devicePixelRatio || 1;
 
-  const width = Math.min(sourceSize, stageCanvas.width - sourceX);
-  const height = Math.min(sourceSize, stageCanvas.height - sourceY);
+    // Copy real pixels from the point under the finger.  We deliberately use
+    // source-over throughout: multiply repeatedly darkened the same pixels and
+    // produced the black track reported on mobile devices.
+    const sxCss = Math.max(0, fromX - radius);
+    const syCss = Math.max(0, fromY - radius);
+    const swCss = Math.min(radius * 2, STAGE_SIZE - sxCss);
+    const shCss = Math.min(radius * 2, STAGE_SIZE - syCss);
+    if (swCss <= 1 || shCss <= 1) return false;
 
-  if (width <= 0 || height <= 0) return false;
+    const patch = document.createElement('canvas');
+    patch.width = Math.max(1, Math.round(swCss * dpr));
+    patch.height = Math.max(1, Math.round(shCss * dpr));
+    const pctx = patch.getContext('2d');
+    pctx.drawImage(
+      stageCanvas,
+      Math.round(sxCss * dpr), Math.round(syCss * dpr),
+      patch.width, patch.height,
+      0, 0, patch.width, patch.height
+    );
 
-  let imageData;
-
-  try {
-    imageData = stageCtx.getImageData(sourceX, sourceY, width, height);
-  } catch (error) {
-    console.warn("絵の具の取得に失敗しました", error);
-    return false;
-  }
-
-  // 透明部分だけなら何もしない
-  let hasPaint = false;
-
-  for (let i = 3; i < imageData.data.length; i += 4) {
-    if (imageData.data[i] > 12) {
-      hasPaint = true;
-      break;
+    // Reject an empty patch so touching bare porcelain does not paint a trail.
+    const probe = pctx.getImageData(0, 0, patch.width, patch.height).data;
+    let hasPaint = false;
+    for (let i = 3; i < probe.length; i += 16) {
+      if (probe[i] > 18) { hasPaint = true; break; }
     }
-  }
+    if (!hasPaint) return false;
 
-  if (!hasPaint) return false;
-
-  const patch = document.createElement("canvas");
-  patch.width = width;
-  patch.height = height;
-
-  const patchCtx = patch.getContext("2d");
-  patchCtx.putImageData(imageData, 0, 0);
-
-  const dx = toX - fromX;
-  const dy = toY - fromY;
-  const length = Math.hypot(dx, dy) || 1;
-
-  const normalX = -dy / length;
-  const normalY = dx / length;
-
-  stageCtx.save();
-
-  // multiplyを使わず、元の絵の具をそのまま引き延ばす
-  stageCtx.globalCompositeOperation = "source-over";
-  stageCtx.globalAlpha = 0.72;
-
-  // 複数の細い流れを作り、マーブル状にする
-  [-7, 0, 7].forEach((offset, index) => {
-    const destinationX =
-      toX - radius + normalX * offset;
-
-    const destinationY =
-      toY - radius + normalY * offset;
+    const len = distance || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const angle = Math.atan2(dy, dx);
 
     stageCtx.save();
+    stageCtx.globalCompositeOperation = 'source-over';
+    stageCtx.imageSmoothingEnabled = true;
 
-    stageCtx.beginPath();
-    stageCtx.ellipse(
-      toX + normalX * offset,
-      toY + normalY * offset,
-      radius * (index === 1 ? 0.75 : 0.48),
-      radius * (index === 1 ? 0.38 : 0.22),
-      Math.atan2(dy, dx),
-      0,
-      Math.PI * 2
-    );
+    // Three offset ribbons pull different neighbouring pigments along the
+    // gesture.  Slow movement leaves stronger, narrower ribbons; fast movement
+    // spreads them wider and blends them sooner.
+    [-0.34, 0, 0.34].forEach((ratio, index) => {
+      const offset = radius * ratio;
+      const cx = toX + nx * offset;
+      const cy = toY + ny * offset;
+      const major = radius * (index === 1 ? 1.05 : 0.82);
+      const minor = ribbonWidth * (index === 1 ? 1.45 : 1.0);
 
-    stageCtx.clip();
+      stageCtx.save();
+      stageCtx.globalAlpha = ribbonAlpha * (index === 1 ? 0.88 : 0.68);
+      stageCtx.beginPath();
+      stageCtx.ellipse(cx, cy, major, minor, angle, 0, Math.PI * 2);
+      stageCtx.clip();
+      stageCtx.drawImage(
+        patch,
+        0, 0, patch.width, patch.height,
+        cx - radius, cy - radius, radius * 2, radius * 2
+      );
+      stageCtx.restore();
+    });
 
-    stageCtx.drawImage(
-      patch,
-      0,
-      0,
-      width,
-      height,
-      destinationX,
-      destinationY,
-      radius * 2,
-      radius * 2
-    );
+    // A soft connector avoids dotted gaps while preserving the coloured
+    // ribbons.  It uses the sampled colour, never black or multiply blending.
+    const picked = samplePatchAverage(fromX, fromY, 7) || samplePatchAverage(toX, toY, 7);
+    if (picked) {
+      stageCtx.globalAlpha = blendAlpha;
+      stageCtx.strokeStyle = `rgb(${picked.r|0},${picked.g|0},${picked.b|0})`;
+      stageCtx.lineWidth = Math.max(5, ribbonWidth * 2.2);
+      stageCtx.lineCap = 'round';
+      stageCtx.lineJoin = 'round';
+      stageCtx.beginPath();
+      stageCtx.moveTo(fromX, fromY);
+      stageCtx.quadraticCurveTo(
+        (fromX + toX) / 2 + nx * radius * 0.15,
+        (fromY + toY) / 2 + ny * radius * 0.15,
+        toX, toY
+      );
+      stageCtx.stroke();
+    }
 
     stageCtx.restore();
-  });
-
-  stageCtx.restore();
-
-  // 指の移動方向へ薄くつなぐ
-  const picked =
-    samplePatchAverage(fromX, fromY, 8) ||
-    samplePatchAverage(toX, toY, 8);
-
-  if (picked) {
-    stageCtx.save();
-    stageCtx.globalCompositeOperation = "source-over";
-    stageCtx.globalAlpha = 0.16;
-    stageCtx.strokeStyle =
-      `rgb(${picked.r | 0},${picked.g | 0},${picked.b | 0})`;
-    stageCtx.lineWidth = 10;
-    stageCtx.lineCap = "round";
-    stageCtx.beginPath();
-    stageCtx.moveTo(fromX, fromY);
-    stageCtx.lineTo(toX, toY);
-    stageCtx.stroke();
-    stageCtx.restore();
+    playMixSound();
+    return true;
   }
-
-  playMixSound();
-  return true;
-}
 
   function spawnDrip(originRect, destX, destY, color){
     const drip = document.createElement('div');
@@ -1917,10 +1894,10 @@
       const dish = dishes[selectedPaletteIndex];
       dish.mixProgress += distance * motion.progressMultiplier;
       if(dish.paintModel){
-        dish.paintModel.mixLevel = Math.min(1, dish.mixProgress/(STAGE_SIZE*1.4));
+        dish.paintModel.mixLevel = Math.min(1, dish.mixProgress/(STAGE_SIZE*3.0));
         dish.paintModel.viscosity = Math.max(0.22, dish.paintModel.viscosity - motion.speed01*0.0025);
       }
-      if(dish.mixProgress > STAGE_SIZE*1.4 && !dish.fullyMixed){
+      if(dish.mixProgress > STAGE_SIZE*3.0 && !dish.fullyMixed){
         finishMixToSingleColor(dish);
       }
     }

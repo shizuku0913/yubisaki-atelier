@@ -25,3 +25,10 @@
 - 2本指の絵の具出し、水、ラメ、色図鑑、お絵かきが従来どおり動く
 
 GitHub Pages: `https://shizuku0913.github.io/yubisaki-atelier/`
+
+
+## v1.2.1
+- Fixed black mixing trails by removing multiply compositing from finger smudging.
+- Added coloured ribbon-based marble smudging.
+- Kept marble patterns visible longer before final uniform mixing.
+- Changed the service worker to network-first and bumped the cache version.
