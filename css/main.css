@@ -884,8 +884,20 @@
   .paint-feel-canvas.feel-releasing{animation-duration:1ms}
 }
 
-/* v1.4.1 stronger tactile feedback */
+/* v1.5.0 stronger tactile feedback */
 .stage-dish.paint-press .paint-feel-canvas{filter:drop-shadow(0 5px 5px rgba(0,0,0,.18)) saturate(1.08)}
 .stage-dish.paint-mixing .paint-feel-canvas{filter:drop-shadow(0 4px 4px rgba(0,0,0,.14)) saturate(1.1)}
 .stage-dish.haptic-flash .dish-base{animation:hapticFlash 130ms ease-out both}
 @keyframes hapticFlash{0%{filter:brightness(1)}45%{filter:brightness(1.12)}100%{filter:brightness(1)}}
+
+/* v1.5.0 pressure hold and elastic settling */
+.stage-dish.paint-press .dish-base{
+  animation:pressureHold 520ms ease-in-out infinite alternate;
+}
+@keyframes pressureHold{
+  from{filter:brightness(1) saturate(1)}
+  to{filter:brightness(.985) saturate(1.045)}
+}
+.paint-feel-canvas.feel-releasing{
+  animation-duration:720ms;
+}

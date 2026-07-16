@@ -1033,6 +1033,11 @@
   let lastFeelPoint = null;
   let lastWaterBloomAt = 0;
   let lastHapticAt = 0;
+  let feelPressRaf = null;
+  let feelPressStartedAt = 0;
+  let feelPressPoint = null;
+  let feelPressHapticDone = false;
+  let lastFeelVector = {dx:0,dy:0};
 
   function resizeFeelCanvas(){
     const rect = stageCanvas.getBoundingClientRect();
@@ -1073,14 +1078,15 @@
     return vibrated;
   }
 
-  function drawLocalDeformation(clientX,clientY,mode='press',dx=0,dy=0){
+  function drawLocalDeformation(clientX,clientY,mode='press',dx=0,dy=0,strength=1){
     const rect=stageCanvas.getBoundingClientRect();
     if(rect.width<2) return;
     resizeFeelCanvas();
     clearFeelCanvas();
     const x=clientX-rect.left, y=clientY-rect.top;
     const dpr=stageDpr || window.devicePixelRatio || 1;
-    const radius=mode==='mix' ? 40 : 36;
+    strength=Math.max(0.25,Math.min(1.35,strength||1));
+    const radius=(mode==='mix' ? 40 : 36)*(0.88+strength*0.12);
     const sx=Math.max(0,x-radius), sy=Math.max(0,y-radius);
     const sw=Math.min(radius*2,rect.width-sx), sh=Math.min(radius*2,rect.height-sy);
     if(sw<=1||sh<=1) return;
@@ -1108,37 +1114,37 @@
       // Centre dent: flatten sampled paint vertically and widen it sideways.
       feelCtx.globalAlpha=.98;
       feelCtx.drawImage(patch,0,0,patch.width,patch.height,
-        x-radius*1.20,y-radius*.66,radius*2.40,radius*1.32);
+        x-radius*(1.10+strength*.16),y-radius*(.78-strength*.16),radius*(2.20+strength*.32),radius*(1.56-strength*.32));
 
       // Paint displaced by the fingertip forms a bright, raised rim.
       [-1,1].forEach(side=>{
         feelCtx.save();
         feelCtx.globalAlpha=.78;
         feelCtx.beginPath();
-        feelCtx.ellipse(x+side*radius*.72,y,radius*.48,radius*.82,0,0,Math.PI*2);
+        feelCtx.ellipse(x+side*radius*(.62+strength*.16),y,radius*(.40+strength*.12),radius*(.68+strength*.18),0,0,Math.PI*2);
         feelCtx.clip();
         feelCtx.drawImage(patch,0,0,patch.width,patch.height,
-          x+side*radius*.34-radius*.5,y-radius*.82,radius,radius*1.64);
+          x+side*radius*(.28+strength*.12)-radius*.5,y-radius*(.68+strength*.16),radius,radius*(1.36+strength*.32));
         feelCtx.restore();
       });
 
       // A translucent centre shadow makes the indentation unmistakable.
       const dent=feelCtx.createRadialGradient(x,y,2,x,y,radius*.75);
-      dent.addColorStop(0,'rgba(35,25,18,.18)');
+      dent.addColorStop(0,`rgba(35,25,18,${0.10+strength*0.12})`);
       dent.addColorStop(.45,'rgba(35,25,18,.07)');
       dent.addColorStop(1,'rgba(35,25,18,0)');
       feelCtx.fillStyle=dent; feelCtx.beginPath(); feelCtx.arc(x,y,radius*.78,0,Math.PI*2); feelCtx.fill();
     }else{
       const dist=Math.hypot(dx,dy);
-      const speed=Math.min(1,dist/22);
+      const speed=Math.min(1.25,dist/22);
       const angle=Math.atan2(dy,dx);
       feelCtx.translate(x,y); feelCtx.rotate(angle);
 
       // Long sticky body in movement direction.
       feelCtx.globalAlpha=.92;
       feelCtx.drawImage(patch,0,0,patch.width,patch.height,
-        -radius*(1.12+speed*.42),-radius*.58,
-        radius*(2.24+speed*1.18),radius*1.16);
+        -radius*(1.08+speed*.55),-radius*(.62-speed*.08),
+        radius*(2.16+speed*1.52),radius*(1.24-speed*.12));
 
       // Two offset lobes create the "ぐにぐに" sideways wobble.
       const wobble=Math.sin(performance.now()/55)*radius*.22;
@@ -1157,6 +1163,78 @@
     feelCtx.fillStyle=g; feelCtx.beginPath();feelCtx.arc(x,y,radius,0,Math.PI*2);feelCtx.fill();
   }
 
+
+  function stopPressFeelLoop(){
+    if(feelPressRaf!==null){
+      cancelAnimationFrame(feelPressRaf);
+      feelPressRaf=null;
+    }
+  }
+
+  function startPressFeelLoop(clientX,clientY){
+    stopPressFeelLoop();
+    feelPressStartedAt=performance.now();
+    feelPressPoint={x:clientX,y:clientY};
+    feelPressHapticDone=false;
+    const tick=(now)=>{
+      if(!feelPressPoint) return;
+      const held=Math.max(0,now-feelPressStartedAt);
+      const strength=Math.min(1.25,0.42+held/420);
+      drawLocalDeformation(feelPressPoint.x,feelPressPoint.y,'press',0,0,strength);
+      stageDish.style.setProperty('--feel-sx',(1.002-strength*.010).toFixed(3));
+      stageDish.style.setProperty('--feel-sy',(1.000-strength*.020).toFixed(3));
+      if(!feelPressHapticDone && held>320){
+        feelPressHapticDone=true;
+        softHaptic([8,24,5]);
+      }
+      feelPressRaf=requestAnimationFrame(tick);
+    };
+    feelPressRaf=requestAnimationFrame(tick);
+  }
+
+  function settlePaintAt(point,vector){
+    if(!point) return;
+    const rect=stageCanvas.getBoundingClientRect();
+    if(rect.width<2) return;
+    const x=point.x, y=point.y;
+    const radius=34;
+    const dpr=stageDpr || window.devicePixelRatio || 1;
+    const sx=Math.max(0,x-radius), sy=Math.max(0,y-radius);
+    const sw=Math.min(radius*2,STAGE_SIZE-sx), sh=Math.min(radius*2,STAGE_SIZE-sy);
+    if(sw<=2||sh<=2) return;
+    const patch=document.createElement('canvas');
+    patch.width=Math.max(1,Math.round(sw*dpr));
+    patch.height=Math.max(1,Math.round(sh*dpr));
+    const pctx=patch.getContext('2d');
+    pctx.drawImage(stageCanvas,Math.round(sx*dpr),Math.round(sy*dpr),patch.width,patch.height,0,0,patch.width,patch.height);
+    const probe=pctx.getImageData(0,0,patch.width,patch.height).data;
+    let alpha=0;
+    for(let i=3;i<probe.length;i+=24) alpha+=probe[i];
+    if(alpha<180) return;
+    const vx=Math.max(-22,Math.min(22,(vector&&vector.dx)||0));
+    const vy=Math.max(-22,Math.min(22,(vector&&vector.dy)||0));
+    const started=performance.now();
+    const duration=520;
+    const frame=(now)=>{
+      const q=Math.min(1,(now-started)/duration);
+      const ease=1-Math.pow(1-q,3);
+      const wobble=Math.sin(q*Math.PI*3)*(1-q);
+      stageCtx.save();
+      stageCtx.globalCompositeOperation='source-over';
+      stageCtx.globalAlpha=.10*(1-q);
+      stageCtx.translate(x+vx*(1-ease)*.38,y+vy*(1-ease)*.38);
+      stageCtx.rotate(wobble*.05);
+      stageCtx.scale(1+wobble*.045,1-wobble*.035);
+      stageCtx.beginPath();
+      stageCtx.ellipse(0,0,radius*(1.04+wobble*.05),radius*(.72-wobble*.04),Math.atan2(vy,vx||.001),0,Math.PI*2);
+      stageCtx.clip();
+      stageCtx.drawImage(patch,0,0,patch.width,patch.height,-radius,-radius,radius*2,radius*2);
+      stageCtx.restore();
+      if(q<1) requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }
+
   function setFeelPoint(clientX, clientY){
     const r = stageCanvas.getBoundingClientRect();
     const x = Math.max(0, Math.min(r.width, clientX-r.left));
@@ -1172,29 +1250,35 @@
   function beginPaintPress(clientX, clientY){
     clearTimeout(feelReleaseTimer);
     setFeelPoint(clientX,clientY);
-    drawLocalDeformation(clientX,clientY,'press');
+    lastFeelVector={dx:0,dy:0};
+    drawLocalDeformation(clientX,clientY,'press',0,0,.48);
+    startPressFeelLoop(clientX,clientY);
     softHaptic(12);
     stageDish.classList.remove('paint-release');
     stageDish.classList.add('paint-press');
-    stageDish.style.setProperty('--feel-sx','.992');
-    stageDish.style.setProperty('--feel-sy','.982');
   }
 
   function updatePaintFeel(clientX, clientY, prevX, prevY){
+    stopPressFeelLoop();
+    feelPressPoint=null;
     setFeelPoint(clientX,clientY);
     const dx=clientX-prevX, dy=clientY-prevY;
-    const speed=Math.min(1,Math.hypot(dx,dy)/18);
+    lastFeelVector={dx,dy};
+    const speed=Math.min(1.2,Math.hypot(dx,dy)/18);
     const angle=Math.atan2(dy,dx)*180/Math.PI;
-    drawLocalDeformation(clientX,clientY,'mix',dx,dy);
+    drawLocalDeformation(clientX,clientY,'mix',dx,dy,.72+speed*.38);
     if(speed>.42) softHaptic(7);
     stageDish.classList.remove('paint-press');
     stageDish.classList.add('paint-mixing');
-    stageDish.style.setProperty('--feel-rot',(Math.sin(angle*Math.PI/180)*.45).toFixed(2)+'deg');
-    stageDish.style.setProperty('--feel-sx',(1.002+speed*.012).toFixed(3));
-    stageDish.style.setProperty('--feel-sy',(.999-speed*.009).toFixed(3));
+    stageDish.style.setProperty('--feel-rot',(Math.sin(angle*Math.PI/180)*.7).toFixed(2)+'deg');
+    stageDish.style.setProperty('--feel-sx',(1.002+speed*.018).toFixed(3));
+    stageDish.style.setProperty('--feel-sy',(.999-speed*.013).toFixed(3));
   }
 
   function releasePaintFeel(){
+    stopPressFeelLoop();
+    feelPressPoint=null;
+    settlePaintAt(lastFeelPoint,lastFeelVector);
     stageDish.classList.remove('paint-press','paint-mixing');
     stageDish.classList.remove('paint-release');
     void stageDish.offsetWidth;
