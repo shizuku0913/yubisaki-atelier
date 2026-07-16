@@ -1532,70 +1532,124 @@
     announceDiscovery(dish);
   }
 
-  function smudgeStep(fromX, fromY, toX, toY, motion){
-    const profile = motion || {radius:28, blendAlpha:0.28, marbleAlpha:0.5, ribbonWidth:4};
-    const radius = profile.radius || 28;
-    const picked = samplePatchAverage(fromX, fromY, radius*0.92) || samplePatchAverage(toX, toY, radius*0.92);
-    if(!picked) return false;
-    const localPicked = samplePatchAverage(fromX, fromY, 10) || picked;
-    const ctx = stageCtx;
-    const dish = dishes[selectedPaletteIndex];
-    ctx.save();
-    ctx.globalCompositeOperation = 'multiply';
-    const grad = ctx.createRadialGradient(toX,toY,0,toX,toY,radius);
-    grad.addColorStop(0, `rgba(${picked.r|0},${picked.g|0},${picked.b|0},${profile.blendAlpha})`);
-    grad.addColorStop(1, `rgba(${picked.r|0},${picked.g|0},${picked.b|0},0)`);
-    ctx.beginPath();
-    ctx.arc(toX,toY,radius,0,Math.PI*2);
-    ctx.fillStyle = grad;
-    ctx.fill();
-    ctx.restore();
+ function smudgeStep(fromX, fromY, toX, toY) {
+  const radius = 25;
+  const dpr = stageDpr || window.devicePixelRatio || 1;
 
-    // visible marble streaks: a few thin, more saturated ribbons trailing
-    // alongside the drag path (not just on top of it), on top of the soft
-    // blend, so mixing looks like swirled marble/batter with real visible
-    // lines, not just a plain blur, until you've mixed a lot
-    const dx = toX-fromX, dy = toY-fromY;
-    const len = Math.hypot(dx,dy) || 1;
-    const nx = -dy/len, ny = dx/len;
-    ctx.save();
-    ctx.globalCompositeOperation = 'multiply';
-    [-6, 0, 6].forEach(offset=>{
-      const ribbonAlpha = profile.marbleAlpha * (offset===0 ? 1 : 0.72);
-      ctx.strokeStyle = `rgba(${localPicked.r|0},${localPicked.g|0},${localPicked.b|0},${ribbonAlpha})`;
-      ctx.lineWidth = offset===0 ? profile.ribbonWidth : profile.ribbonWidth*0.62;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(fromX+nx*offset, fromY+ny*offset);
-      ctx.lineTo(toX+nx*offset, toY+ny*offset);
-      ctx.stroke();
-    });
-    ctx.restore();
+  // 指を置いた場所の絵の具を切り取る
+  const sourceX = Math.max(0, Math.round((fromX - radius) * dpr));
+  const sourceY = Math.max(0, Math.round((fromY - radius) * dpr));
+  const sourceSize = Math.round(radius * 2 * dpr);
 
-    // White is an opaque, reflective pigment (it lightens rather than
-    // filters), so 'multiply' alone can't represent it - and classifying
-    // each sampled patch as "white or not" breaks down after the first
-    // stroke, since a partly-mixed patch is no longer pure white even
-    // though white paint is still present. So instead: if white was ever
-    // dispensed into this dish, keep nudging every stroke a little toward
-    // white, in proportion to how much of the dispensed paint was white.
-    const whiteFrac = dish.totalTicks ? (dish.whiteTicks||0) / dish.totalTicks : 0;
-    if(whiteFrac > 0){
-      ctx.save();
-      ctx.globalCompositeOperation = 'source-over';
-      const wGrad = ctx.createRadialGradient(toX,toY,0,toX,toY,radius);
-      const wAlpha = Math.min(0.5, whiteFrac * 0.6);
-      wGrad.addColorStop(0, `rgba(255,255,255,${wAlpha})`);
-      wGrad.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.beginPath();
-      ctx.arc(toX,toY,radius,0,Math.PI*2);
-      ctx.fillStyle = wGrad;
-      ctx.fill();
-      ctx.restore();
-    }
-    playMixSound();
-    return true;
+  const width = Math.min(sourceSize, stageCanvas.width - sourceX);
+  const height = Math.min(sourceSize, stageCanvas.height - sourceY);
+
+  if (width <= 0 || height <= 0) return false;
+
+  let imageData;
+
+  try {
+    imageData = stageCtx.getImageData(sourceX, sourceY, width, height);
+  } catch (error) {
+    console.warn("絵の具の取得に失敗しました", error);
+    return false;
   }
+
+  // 透明部分だけなら何もしない
+  let hasPaint = false;
+
+  for (let i = 3; i < imageData.data.length; i += 4) {
+    if (imageData.data[i] > 12) {
+      hasPaint = true;
+      break;
+    }
+  }
+
+  if (!hasPaint) return false;
+
+  const patch = document.createElement("canvas");
+  patch.width = width;
+  patch.height = height;
+
+  const patchCtx = patch.getContext("2d");
+  patchCtx.putImageData(imageData, 0, 0);
+
+  const dx = toX - fromX;
+  const dy = toY - fromY;
+  const length = Math.hypot(dx, dy) || 1;
+
+  const normalX = -dy / length;
+  const normalY = dx / length;
+
+  stageCtx.save();
+
+  // multiplyを使わず、元の絵の具をそのまま引き延ばす
+  stageCtx.globalCompositeOperation = "source-over";
+  stageCtx.globalAlpha = 0.72;
+
+  // 複数の細い流れを作り、マーブル状にする
+  [-7, 0, 7].forEach((offset, index) => {
+    const destinationX =
+      toX - radius + normalX * offset;
+
+    const destinationY =
+      toY - radius + normalY * offset;
+
+    stageCtx.save();
+
+    stageCtx.beginPath();
+    stageCtx.ellipse(
+      toX + normalX * offset,
+      toY + normalY * offset,
+      radius * (index === 1 ? 0.75 : 0.48),
+      radius * (index === 1 ? 0.38 : 0.22),
+      Math.atan2(dy, dx),
+      0,
+      Math.PI * 2
+    );
+
+    stageCtx.clip();
+
+    stageCtx.drawImage(
+      patch,
+      0,
+      0,
+      width,
+      height,
+      destinationX,
+      destinationY,
+      radius * 2,
+      radius * 2
+    );
+
+    stageCtx.restore();
+  });
+
+  stageCtx.restore();
+
+  // 指の移動方向へ薄くつなぐ
+  const picked =
+    samplePatchAverage(fromX, fromY, 8) ||
+    samplePatchAverage(toX, toY, 8);
+
+  if (picked) {
+    stageCtx.save();
+    stageCtx.globalCompositeOperation = "source-over";
+    stageCtx.globalAlpha = 0.16;
+    stageCtx.strokeStyle =
+      `rgb(${picked.r | 0},${picked.g | 0},${picked.b | 0})`;
+    stageCtx.lineWidth = 10;
+    stageCtx.lineCap = "round";
+    stageCtx.beginPath();
+    stageCtx.moveTo(fromX, fromY);
+    stageCtx.lineTo(toX, toY);
+    stageCtx.stroke();
+    stageCtx.restore();
+  }
+
+  playMixSound();
+  return true;
+}
 
   function spawnDrip(originRect, destX, destY, color){
     const drip = document.createElement('div');
