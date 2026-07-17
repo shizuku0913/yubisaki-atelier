@@ -1263,7 +1263,7 @@
     setFeelPoint(clientX,clientY);
     lastFeelVector={dx:0,dy:0};
     drawLocalDeformation(clientX,clientY,'press',0,0,.48);
-    { const rr=stageCanvas.getBoundingClientRect(), dish=dishes[selectedPaletteIndex]; if(dish.physicsField) dish.physicsField.press((clientX-rr.left)/rr.width,(clientY-rr.top)/rr.height,.13,.95); }
+    { const rr=stageCanvas.getBoundingClientRect(), dish=dishes[selectedPaletteIndex]; if(dish.physicsField) dish.physicsField.beginPress((clientX-rr.left)/rr.width,(clientY-rr.top)/rr.height,.13,.95); }
     startPressFeelLoop(clientX,clientY);
     softHaptic(12);
     stageDish.classList.remove('paint-release');
@@ -1291,6 +1291,7 @@
   function releasePaintFeel(){
     stopPressFeelLoop();
     feelPressPoint=null;
+    { const dish=dishes[selectedPaletteIndex]; if(dish && dish.physicsField) dish.physicsField.endPress(); }
     settlePaintAt(lastFeelPoint,lastFeelVector);
     stageDish.classList.remove('paint-press','paint-mixing');
     stageDish.classList.remove('paint-release');
