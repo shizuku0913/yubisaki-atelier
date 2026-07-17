@@ -82,6 +82,24 @@
       });
       this.dirty=true;
     }
+
+    homogenize(color, strength=.12, flatten=.04){
+      const c=hexToRgb(color);
+      const k=clamp(strength,0,1);
+      for(let i=0;i<this.amount.length;i++){
+        if(this.amount[i]<.005) continue;
+        this.r[i]+=(c.r-this.r[i])*k;
+        this.g[i]+=(c.g-this.g[i])*k;
+        this.b[i]+=(c.b-this.b[i])*k;
+        this.height[i]+=(Math.min(1.25,this.amount[i]) - this.height[i])*clamp(flatten,0,1);
+        this.vx[i]*=(1-k*.55);
+        this.vy[i]*=(1-k*.55);
+      }
+      this.dirty=true;
+    }
+    setUniformColor(color){
+      this.homogenize(color,1,.32);
+    }
     step(dt=.016){
       const n=this.n;
       const nextAmount=new Float32Array(this.amount.length);

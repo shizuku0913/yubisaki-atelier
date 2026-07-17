@@ -1,6 +1,9 @@
 (function(){
   "use strict";
 
+  // Kids mode favors a clear final color; Real mode preserves marbling longer.
+  let kidsMixMode = localStorage.getItem("yubisakiMixMode") !== "real";
+
   // ---- sound effects ----
   let audioCtx = null;
   function ensureAudio(){
@@ -458,6 +461,7 @@
   let selectedColor = null;
   let selectedColorName = null;
   let selectedPaletteIndex = 0;
+  let paletteRenderGeneration = 0; // invalidates animations when switching palettes
   let brushColor = null;
   let brushHasGlitter = false;
   let brushWetness = 0.28;
@@ -1199,6 +1203,7 @@
 
   function settlePaintAt(point,vector){
     if(!point) return;
+    const generation = paletteRenderGeneration;
     const rect=stageCanvas.getBoundingClientRect();
     if(rect.width<2) return;
     const x=point.x, y=point.y;
@@ -1221,6 +1226,7 @@
     const started=performance.now();
     const duration=520;
     const frame=(now)=>{
+      if(generation !== paletteRenderGeneration) return;
       const q=Math.min(1,(now-started)/duration);
       const ease=1-Math.pow(1-q,3);
       const wobble=Math.sin(q*Math.PI*3)*(1-q);
@@ -1302,6 +1308,7 @@
   }
 
   function triggerWaterBloom(cx,cy,r){
+    const generation = paletteRenderGeneration;
     const now=performance.now();
     if(now-lastWaterBloomAt<380) return;
     lastWaterBloomAt=now;
@@ -1318,6 +1325,7 @@
     const duration=1050;
     const base=samplePatchAverage(cx,cy,12);
     function frame(t){
+      if(generation !== paletteRenderGeneration) return;
       const q=Math.min(1,(t-startTime)/duration);
       const ease=1-Math.pow(1-q,3);
       const rr=Math.max(10,r*.45)+ease*Math.max(44,r*2.4);
@@ -1405,6 +1413,20 @@
   }
 
   function selectPalette(index){
+    if(index < 0 || index >= dishes.length) return;
+
+    // Stop all visual effects that belong to the palette being left.
+    // Without this, delayed water/settle animation frames can draw old paint
+    // onto the newly selected palette.
+    paletteRenderGeneration += 1;
+    stopPressFeelLoop();
+    feelPressPoint = null;
+    clearTimeout(feelReleaseTimer);
+    stageDish.classList.remove('paint-press','paint-mixing','paint-release','water-bloom','mixpulse');
+    feelCanvas.classList.remove('feel-releasing');
+    clearFeelCanvas();
+    if(STAGE_SIZE > 0) physicsCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
+
     // save current stage pixels into the palette we're leaving
     const prev = dishes[selectedPaletteIndex];
     if(prev.storageCtx){
@@ -1414,9 +1436,17 @@
 
     selectedPaletteIndex = index;
     const dish = dishes[index];
+    // Clear every shared visual layer before restoring the target palette.
     stageCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
-    if(dish.storageCtx){
+    physicsCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
+    clearFeelCanvas();
+    if(dish.storageCtx && dish.hasPaint){
       stageCtx.drawImage(dish.storage,0,0,dish.storage.width,dish.storage.height,0,0,STAGE_SIZE,STAGE_SIZE);
+    }
+    // Render the selected palette's own physics field immediately, rather
+    // than leaving the previous field visible until the next animation frame.
+    if(dish.physicsField){
+      dish.physicsField.render(physicsCtx,STAGE_SIZE);
     }
 
     miniDishEls.forEach((el,i)=> el.classList.toggle('selected', i===index));
@@ -1868,6 +1898,7 @@
     }
     stageDish.classList.remove('mixpulse'); void stageDish.offsetWidth; stageDish.classList.add('mixpulse');
     setDishColor(dish, hex);
+    if(dish.physicsField) dish.physicsField.setUniformColor(hex);
     announceDiscovery(dish);
   }
 
@@ -1986,6 +2017,7 @@
   }
 
   function waterBlobStamp(cx, cy, r){
+    const generation = paletteRenderGeneration;
     const ctx = stageCtx;
     triggerWaterBloom(cx,cy,r);
 
@@ -1996,6 +2028,7 @@
     const started = performance.now();
     const duration = 1050;
     function frame(now){
+      if(generation !== paletteRenderGeneration) return;
       const t=Math.min(1,(now-started)/duration);
       const eased=1-Math.pow(1-t,3);
       const rr=Math.max(3,r*(.18+eased*.95));
@@ -2251,11 +2284,24 @@
       didDrag = true;
       const dish = dishes[selectedPaletteIndex];
       dish.mixProgress += distance * motion.progressMultiplier;
+      const finishDistance = STAGE_SIZE * (kidsMixMode ? 1.65 : 3.0);
+      const mixRatio = Math.min(1, dish.mixProgress / finishDistance);
       if(dish.paintModel){
-        dish.paintModel.mixLevel = Math.min(1, dish.mixProgress/(STAGE_SIZE*3.0));
+        dish.paintModel.mixLevel = mixRatio;
         dish.paintModel.viscosity = Math.max(0.22, dish.paintModel.viscosity - motion.speed01*0.0025);
       }
-      if(dish.mixProgress > STAGE_SIZE*3.0 && !dish.fullyMixed){
+      // In kids mode, progressively pull all visible pigment toward the clean
+      // recipe color, so the result becomes easy to read instead of staying
+      // speckled with many leftover colors.
+      if(kidsMixMode && dish.physicsField && mixRatio > 0.28){
+        const target = computeSubtractiveMix(dish.colorTicks||{});
+        if(target){
+          const targetHex = rgbToHex(target.r,target.g,target.b);
+          const strength = 0.025 + Math.pow((mixRatio-0.28)/0.72, 1.35) * 0.16;
+          dish.physicsField.homogenize(targetHex, strength, 0.025);
+        }
+      }
+      if(dish.mixProgress > finishDistance && !dish.fullyMixed){
         finishMixToSingleColor(dish);
       }
     }
@@ -2403,6 +2449,20 @@
   const palettePanel = document.getElementById('palettePanel');
   const brushPanel = document.getElementById('brushPanel');
   const settingsPanel = document.getElementById('settingsPanel');
+  const mixModeBtn = document.getElementById('mixModeBtn');
+  function updateMixModeButton(){
+    if(!mixModeBtn) return;
+    mixModeBtn.textContent = kidsMixMode ? '🧒 まぜかた：キッズ' : '🎨 まぜかた：リアル';
+  }
+  if(mixModeBtn){
+    updateMixModeButton();
+    mixModeBtn.addEventListener('click', ()=>{
+      kidsMixMode = !kidsMixMode;
+      localStorage.setItem('yubisakiMixMode', kidsMixMode ? 'kids' : 'real');
+      updateMixModeButton();
+      showToast(kidsMixMode ? 'きれいにまざるモード' : 'マーブルがのこるモード');
+    });
+  }
   document.getElementById('paletteMenuBtn').addEventListener('click', e=>{
     e.stopPropagation();
     toggleDropdown(palettePanel);
