@@ -52,6 +52,8 @@
       this.shadeCtx = this.shadeCanvas.getContext('2d');
       this.colorCanvas = document.createElement('canvas');
       this.colorCtx = this.colorCanvas.getContext('2d');
+      this.heightCanvas = document.createElement('canvas');
+      this.heightCtx = this.heightCanvas.getContext('2d');
       this.colorBuckets = new Map();
       this.particles = [];
       this.bonds = [];
@@ -119,8 +121,8 @@
       this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
       this.w = this.canvas.width;
       this.h = this.canvas.height;
-      this.maskCanvas.width = this.shadeCanvas.width = this.colorCanvas.width = Math.max(180, Math.round(this.w * this.renderScale));
-      this.maskCanvas.height = this.shadeCanvas.height = this.colorCanvas.height = Math.max(180, Math.round(this.h * this.renderScale));
+      this.maskCanvas.width = this.shadeCanvas.width = this.colorCanvas.width = this.heightCanvas.width = Math.max(180, Math.round(this.w * this.renderScale));
+      this.maskCanvas.height = this.shadeCanvas.height = this.colorCanvas.height = this.heightCanvas.height = Math.max(180, Math.round(this.h * this.renderScale));
       this.sx = this.maskCanvas.width / this.w;
       this.sy = this.maskCanvas.height / this.h;
       this.particleRadius = clamp(Math.min(this.w, this.h) * .018, 7, 15);
@@ -474,8 +476,9 @@
 
         // Thickness is derived from local packing. It rises gradually so piled
         // paint looks heavier without adding more simulation particles.
-        const targetThickness = clamp(.82 + dense * .055, .82, 1.48);
-        p.thickness = lerp(p.thickness, targetThickness, .08);
+        const compression = pnt.down ? clamp(1 - Math.hypot(p.x-pnt.x,p.y-pnt.y) / touchRadius, 0, 1) : 0;
+        const targetThickness = clamp(.80 + dense * .052 + p.strain * .16 - compression * .20, .72, 1.62);
+        p.thickness = lerp(p.thickness, targetThickness, compression > 0 ? .16 : .075);
 
         const distanceToFinger = Math.hypot(p.x - pnt.x, p.y - pnt.y);
         const touched = pnt.down && distanceToFinger < touchRadius;
@@ -655,6 +658,11 @@
             p.vy += dy*inv*soft*pressure*250*sdt;
             p.vx += pnt.vx*soft*12*sdt;
             p.vy += pnt.vy*soft*12*sdt;
+            // Surface deformation: pressure lowers the centre while gathering
+            // paint into a raised rim around the finger.
+            p.thickness = clamp(p.thickness - soft * pressure * .028, .70, 1.68);
+            const rim = Math.exp(-Math.pow((dist / pointerRadius - .72) / .24, 2));
+            p.thickness = clamp(p.thickness + rim * pressure * .018, .70, 1.68);
           }
 
           // Grip Constraint 2.0: particles are attached to a lagging anchor,
@@ -711,11 +719,37 @@
       c.clearRect(0,0,mw,mh);
       c.save();
       c.globalCompositeOperation='lighter';
+
+      // Stretched active bonds are drawn before the particles. They bridge the
+      // held mass to the body and make the characteristic paint "neck" visible.
+      c.lineCap='round';
+      let neckCount=0;
+      for (const bond of this.bonds) {
+        if (!bond.active || neckCount>=560) continue;
+        const a=this.particles[bond.a], b=this.particles[bond.b];
+        if (!a || !b) continue;
+        const d=Math.hypot(b.x-a.x,b.y-a.y);
+        const ratio=d/Math.max(1,bond.rest);
+        if (ratio<1.08 || ratio>2.25) continue;
+        const strain=clamp((ratio-1.04)/1.10,0,1);
+        const meanThickness=(a.thickness+b.thickness)*.5;
+        c.globalAlpha=.18 + strain*.24;
+        c.lineWidth=this.particleRadius*Math.min(this.sx,this.sy)*(1.52-strain*.72)*clamp(meanThickness,.78,1.50);
+        c.beginPath();
+        c.moveTo(a.x*this.sx,a.y*this.sy);
+        c.lineTo(b.x*this.sx,b.y*this.sy);
+        c.strokeStyle='rgba(255,255,255,.82)';
+        c.stroke();
+        neckCount++;
+      }
+
+      c.globalAlpha=1;
       const sprite=this.particleSprite;
-      const half=this.spriteHalf;
       for (const p of this.particles) {
-        const scale=(p.detached ? .82 : 1) * clamp(.88 + (p.thickness-1)*.36, .82, 1.20);
-        const sw=sprite.width*scale, sh=sprite.height*scale;
+        const motion=Math.hypot(p.vx,p.vy);
+        const elongation=clamp(1 + p.strain*.18 + motion*.004,1,1.24);
+        const scale=(p.detached ? .82 : 1) * clamp(.86 + (p.thickness-1)*.48, .78, 1.32);
+        const sw=sprite.width*scale*elongation, sh=sprite.height*scale/Math.sqrt(elongation);
         c.drawImage(sprite,p.x*this.sx-sw/2,p.y*this.sy-sh/2,sw,sh);
       }
       c.restore();
@@ -756,12 +790,56 @@
         }
         c.fill();
       }
+      // Colour the visible necks with the average pigment of their ends.
+      c.globalAlpha=.54;
+      c.lineCap='round';
+      let neckCount=0;
+      for (const bond of this.bonds) {
+        if (!bond.active || neckCount>=440) continue;
+        const a=this.particles[bond.a], b=this.particles[bond.b];
+        if (!a || !b) continue;
+        const d=Math.hypot(b.x-a.x,b.y-a.y);
+        const ratio=d/Math.max(1,bond.rest);
+        if (ratio<1.10 || ratio>2.18) continue;
+        const strain=clamp((ratio-1.08)/1.0,0,1);
+        const r=Math.round((a.pigment.r+b.pigment.r)*.5);
+        const g=Math.round((a.pigment.g+b.pigment.g)*.5);
+        const bcol=Math.round((a.pigment.b+b.pigment.b)*.5);
+        c.strokeStyle=`rgb(${r},${g},${bcol})`;
+        c.lineWidth=this.particleRadius*Math.min(this.sx,this.sy)*(1.34-strain*.62);
+        c.beginPath();
+        c.moveTo(a.x*this.sx,a.y*this.sy);
+        c.lineTo(b.x*this.sx,b.y*this.sy);
+        c.stroke();
+        neckCount++;
+      }
+      c.restore();
+    }
+
+    renderHeightField() {
+      const c=this.heightCtx;
+      const mw=this.heightCanvas.width, mh=this.heightCanvas.height;
+      c.clearRect(0,0,mw,mh);
+      c.save();
+      c.globalCompositeOperation='lighter';
+      for (const p of this.particles) {
+        const height=clamp((p.thickness-.68)/1.0 + p.strain*.18, .08, 1);
+        const radius=this.particleRadius*Math.min(this.sx,this.sy)*(1.10+height*.72);
+        const x=p.x*this.sx, y=p.y*this.sy;
+        const g=c.createRadialGradient(x-radius*.24,y-radius*.28,0,x,y,radius);
+        g.addColorStop(0,`rgba(255,255,255,${.22+height*.34})`);
+        g.addColorStop(.52,`rgba(255,255,255,${.08+height*.13})`);
+        g.addColorStop(1,'rgba(255,255,255,0)');
+        c.fillStyle=g;
+        c.fillRect(x-radius,y-radius,radius*2,radius*2);
+      }
       c.restore();
     }
 
     render() {
       this.renderMask();
       this.renderColorField();
+      this.renderHeightField();
       const ctx=this.ctx;
       ctx.clearRect(0,0,this.w,this.h);
 
@@ -808,6 +886,21 @@
       sheen.addColorStop(.62,'rgba(255,255,255,0)');
       ctx.fillStyle=sheen;
       ctx.fillRect(0,0,this.w,this.h);
+      ctx.restore();
+
+      // Height-derived highlight and opposite offset shadow make piled paint
+      // read as a deforming surface rather than a flat translucent blob.
+      ctx.save();
+      ctx.globalCompositeOperation='source-atop';
+      ctx.globalAlpha=.34;
+      ctx.filter=`blur(${Math.max(1.4,this.particleRadius*.10)}px)`;
+      ctx.drawImage(this.heightCanvas,-this.particleRadius*.24,-this.particleRadius*.30,this.w,this.h);
+      ctx.restore();
+      ctx.save();
+      ctx.globalCompositeOperation='multiply';
+      ctx.globalAlpha=.19;
+      ctx.filter=`blur(${Math.max(1.8,this.particleRadius*.14)}px)`;
+      ctx.drawImage(this.heightCanvas,this.particleRadius*.34,this.particleRadius*.42,this.w,this.h);
       ctx.restore();
 
       // Drying subtly reduces the uniform wet sheen. The texture remains gentle
@@ -883,5 +976,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.9 Living Paint');
+  console.info('Shizuku Engine 4.0 alpha v0.9.1 Surface Deformation');
 })();
