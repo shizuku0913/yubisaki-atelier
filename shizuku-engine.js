@@ -57,7 +57,8 @@
       this.neighborBuffer = [];
       this.color = '#e84a68';
       this.rgb = this.hexToRgb(this.color);
-      this.pointer = { down:false, id:null, x:0, y:0, px:0, py:0, vx:0, vy:0, pressure:.7, justReleased:0, grabbed:new Map() };
+      this.pointer = { down:false, id:null, x:0, y:0, px:0, py:0, vx:0, vy:0, pressure:.7, justReleased:0, grabbed:new Map(), anchorX:0, anchorY:0, lastCapture:0 };
+      this.maxGrabbed = 78;
       this.fixedMass = 0;
       this.lastTime = performance.now();
       this.renderScale = 0.42;
@@ -174,7 +175,7 @@
         e.preventDefault();
         const p = local(e);
         this.canvas.setPointerCapture(e.pointerId);
-        Object.assign(this.pointer, { down:true, id:e.pointerId, x:p.x, y:p.y, px:p.x, py:p.y, vx:0, vy:0, pressure:e.pressure || .72 });
+        Object.assign(this.pointer, { down:true, id:e.pointerId, x:p.x, y:p.y, px:p.x, py:p.y, vx:0, vy:0, pressure:e.pressure || .72, anchorX:p.x, anchorY:p.y, lastCapture:performance.now() });
         this.beginGrab();
         this.wake(2200);
       });
@@ -207,19 +208,32 @@
     beginGrab() {
       const pnt = this.pointer;
       pnt.grabbed.clear();
-      const radius = Math.min(this.w, this.h) * .082;
+      this.capturePaint(true);
+    }
+
+    capturePaint(initial = false) {
+      const pnt = this.pointer;
+      const radius = Math.min(this.w, this.h) * (initial ? .090 : .070);
       const candidates = [];
       for (let i = 0; i < this.particles.length; i++) {
+        if (pnt.grabbed.has(i)) continue;
         const p = this.particles[i];
-        const dx = p.x - pnt.x, dy = p.y - pnt.y;
+        const dx = p.x - pnt.anchorX, dy = p.y - pnt.anchorY;
         const d = Math.hypot(dx, dy);
         if (d < radius) candidates.push([d, i, dx, dy]);
       }
       candidates.sort((a,b) => a[0]-b[0]);
-      const limit = Math.min(54, candidates.length);
+      const room = Math.max(0, this.maxGrabbed - pnt.grabbed.size);
+      const limit = Math.min(room, initial ? 60 : 10, candidates.length);
       for (let n = 0; n < limit; n++) {
-        const [, i, dx, dy] = candidates[n];
-        pnt.grabbed.set(i, { ox: dx, oy: dy, strength: 1 - n / Math.max(1, limit) });
+        const [d, i, dx, dy] = candidates[n];
+        const radial = 1 - d / radius;
+        pnt.grabbed.set(i, {
+          ox: dx,
+          oy: dy,
+          strength: clamp(.28 + radial * .72, .28, 1),
+          age: 0
+        });
       }
     }
 
@@ -240,6 +254,20 @@
         const target = pr * 1.36;
         const pointerRadius = Math.min(this.w,this.h) * .105;
         const pnt = this.pointer;
+
+        if (pnt.down) {
+          // The grip point deliberately trails the finger. That delay is what
+          // makes the paint feel held rather than merely pushed.
+          const fingerSpeed = Math.hypot(pnt.vx, pnt.vy);
+          const follow = clamp(.20 + fingerSpeed * .012, .20, .52);
+          pnt.anchorX = lerp(pnt.anchorX, pnt.x, follow);
+          pnt.anchorY = lerp(pnt.anchorY, pnt.y, follow);
+          const now = performance.now();
+          if (now - pnt.lastCapture > 85 && pnt.grabbed.size < this.maxGrabbed) {
+            this.capturePaint(false);
+            pnt.lastCapture = now;
+          }
+        }
 
         for (let i=0;i<this.particles.length;i++) {
           const p=this.particles[i];
@@ -273,6 +301,24 @@
             p.vy += (cy-p.y)*0.60*sdt;
           }
 
+          // Grip propagates through nearby paint. A directly held patch drags
+          // its neighbours, producing a neck instead of isolated flying dots.
+          if (pnt.down && !pnt.grabbed.has(i)) {
+            let tx=0, ty=0, linked=0;
+            for (const j of near) {
+              const held=pnt.grabbed.get(j);
+              if (!held) continue;
+              const q=this.particles[j];
+              tx += q.x; ty += q.y; linked++;
+            }
+            if (linked) {
+              tx/=linked; ty/=linked;
+              const coupling=Math.min(1, linked*.22);
+              p.vx += (tx-p.x)*1.75*coupling*sdt;
+              p.vy += (ty-p.y)*1.75*coupling*sdt;
+            }
+          }
+
           const dx=p.x-pnt.x, dy=p.y-pnt.y;
           const dist=Math.hypot(dx,dy);
           if (pnt.down && dist<pointerRadius) {
@@ -287,20 +333,25 @@
             p.vy += pnt.vy*soft*12*sdt;
           }
 
-          // Nyuru grab: a limited patch of paint is attached to the finger by
-          // soft springs. It stretches visibly and detaches past a real limit.
+          // Grip Constraint 2.0: particles are attached to a lagging anchor,
+          // preserving a soft patch shape. Slow pulls stretch; fast pulls tear.
           const grab=pnt.grabbed.get(i);
           if (pnt.down && grab) {
-            const targetX=pnt.x + grab.ox*.42;
-            const targetY=pnt.y + grab.oy*.42;
+            grab.age += sdt;
+            const shapeRetention = lerp(.50, .28, clamp(grab.age * .55, 0, 1));
+            const targetX=pnt.anchorX + grab.ox*shapeRetention;
+            const targetY=pnt.anchorY + grab.oy*shapeRetention;
             const gx=targetX-p.x, gy=targetY-p.y;
             const stretch=Math.hypot(gx,gy);
-            const spring=(16 + grab.strength*18);
+            const fingerSpeed=Math.hypot(pnt.vx,pnt.vy);
+            const spring=12 + grab.strength*15;
             p.vx += gx*spring*sdt;
             p.vy += gy*spring*sdt;
-            p.vx += pnt.vx*(.16 + grab.strength*.22);
-            p.vy += pnt.vy*(.16 + grab.strength*.22);
-            const breakDistance=pointerRadius*(1.10 + grab.strength*.72);
+            p.vx += pnt.vx*(.09 + grab.strength*.13);
+            p.vy += pnt.vy*(.09 + grab.strength*.13);
+
+            const speedPenalty=clamp(fingerSpeed/24,0,.68);
+            const breakDistance=pointerRadius*(1.82 - speedPenalty + grab.strength*.25);
             if (stretch>breakDistance) pnt.grabbed.delete(i);
           }
           if (!pnt.down && pnt.justReleased>0 && dist<pointerRadius*1.15) {
@@ -436,5 +487,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.3 Performance Stabilization');
+  console.info('Shizuku Engine 4.0 alpha v0.4 Grip Constraint 2.0');
 })();
