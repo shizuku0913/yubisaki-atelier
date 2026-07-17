@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yubisaki-atelier-v3-0-0-m1';
+const CACHE_NAME = 'yubisaki-atelier-v3-0-0-m1-5-organic';
 const APP_FILES = [
   './',
   './index.html',

@@ -213,8 +213,74 @@
       return a*(1-fy)+b*fy;
     }
 
+    _smoothInto(source,target,passes=2){
+      const n=this.n;
+      if(!this._blurTemp || this._blurTemp.length!==source.length){
+        this._blurTemp=new Float32Array(source.length);
+      }
+      let input=source, output=target, temp=this._blurTemp;
+      for(let pass=0; pass<passes; pass++){
+        for(let y=0;y<n;y++) for(let x=0;x<n;x++){
+          const i=this.idx(x,y);
+          const xm2=Math.max(0,x-2), xm1=Math.max(0,x-1), xp1=Math.min(n-1,x+1), xp2=Math.min(n-1,x+2);
+          temp[i]=(input[this.idx(xm2,y)] + 4*input[this.idx(xm1,y)] + 6*input[i] + 4*input[this.idx(xp1,y)] + input[this.idx(xp2,y)]) / 16;
+        }
+        for(let y=0;y<n;y++) for(let x=0;x<n;x++){
+          const i=this.idx(x,y);
+          const ym2=Math.max(0,y-2), ym1=Math.max(0,y-1), yp1=Math.min(n-1,y+1), yp2=Math.min(n-1,y+2);
+          output[i]=(temp[this.idx(x,ym2)] + 4*temp[this.idx(x,ym1)] + 6*temp[i] + 4*temp[this.idx(x,yp1)] + temp[this.idx(x,yp2)]) / 16;
+        }
+        if(pass<passes-1){
+          input=output;
+          output = output===target ? new Float32Array(source.length) : target;
+        }
+      }
+      if(output!==target) target.set(output);
+    }
+
+    _catmull(arr,gx,gy){
+      const n=this.n;
+      const x=clamp(gx,0,n-1), y=clamp(gy,0,n-1);
+      const ix=Math.floor(x), iy=Math.floor(y), fx=x-ix, fy=y-iy;
+      const cubic=(p0,p1,p2,p3,t)=>{
+        const a0=-.5*p0+1.5*p1-1.5*p2+.5*p3;
+        const a1=p0-2.5*p1+2*p2-.5*p3;
+        const a2=-.5*p0+.5*p2;
+        return ((a0*t+a1)*t+a2)*t+p1;
+      };
+      const rows=[];
+      for(let m=-1;m<=2;m++){
+        const yy=clamp(iy+m,0,n-1);
+        const p=[];
+        for(let k=-1;k<=2;k++) p.push(arr[this.idx(clamp(ix+k,0,n-1),yy)]);
+        rows.push(cubic(p[0],p[1],p[2],p[3],fx));
+      }
+      return cubic(rows[0],rows[1],rows[2],rows[3],fy);
+    }
+
     render(ctx,size){
-      const scale=3;
+      // Organic Renderer: blur the simulation lattice into continuous scalar
+      // fields, then reconstruct it with bicubic interpolation. The visible
+      // boundary is an implicit contour, not a row of grid cells.
+      const c=this.amount.length;
+      if(!this._smoothAmount || this._smoothAmount.length!==c){
+        this._smoothAmount=new Float32Array(c);
+        this._smoothHeight=new Float32Array(c);
+        this._smoothDeform=new Float32Array(c);
+        this._smoothWet=new Float32Array(c);
+        this._smoothR=new Float32Array(c);
+        this._smoothG=new Float32Array(c);
+        this._smoothB=new Float32Array(c);
+      }
+      this._smoothInto(this.amount,this._smoothAmount,2);
+      this._smoothInto(this.height,this._smoothHeight,2);
+      this._smoothInto(this.deform,this._smoothDeform,2);
+      this._smoothInto(this.wet,this._smoothWet,1);
+      this._smoothInto(this.r,this._smoothR,1);
+      this._smoothInto(this.g,this._smoothG,1);
+      this._smoothInto(this.b,this._smoothB,1);
+
+      const scale=4;
       const w=this.n*scale,h=this.n*scale;
       if(this._surface.width!==w||this._surface.height!==h){
         this._surface.width=w; this._surface.height=h;
@@ -223,32 +289,38 @@
       const data=this._imageData.data;
       const n=this.n;
       for(let py=0;py<h;py++){
-        const gy=py/(h-1)*(n-1);
+        const gy0=py/(h-1)*(n-1);
         for(let px=0;px<w;px++){
-          const gx=px/(w-1)*(n-1);
+          const gx0=px/(w-1)*(n-1);
+          // Sub-pixel flow warp breaks any remaining axis-aligned contour
+          // without adding noisy bumps to the silhouette.
+          const warp=.12*Math.sin(gy0*.43)+.07*Math.sin((gx0+gy0)*.21);
+          const gx=gx0+warp, gy=gy0+.10*Math.sin(gx0*.37)-warp*.35;
           const o=(py*w+px)*4;
-          const amount=this._sample(this.amount,gx,gy);
-          if(amount<.006){ data[o]=data[o+1]=data[o+2]=data[o+3]=0; continue; }
-          const wet=this._sample(this.wet,gx,gy);
-          const baseHeight=this._sample(this.height,gx,gy);
-          const deform=this._sample(this.deform,gx,gy);
-          const z=baseHeight+deform*.72;
-          const eps=.72;
-          const zx=this._sample(this.height,gx+eps,gy)+this._sample(this.deform,gx+eps,gy)*.72
-                  -this._sample(this.height,gx-eps,gy)-this._sample(this.deform,gx-eps,gy)*.72;
-          const zy=this._sample(this.height,gx,gy+eps)+this._sample(this.deform,gx,gy+eps)*.72
-                  -this._sample(this.height,gx,gy-eps)-this._sample(this.deform,gx,gy-eps)*.72;
-          // Soft top-left studio light. The depressed center darkens while the
-          // raised rim catches light, making the deformation readable instantly.
-          const normalLight=clamp(.56-zx*.42-zy*.48,0,1);
-          const depthShade=clamp(deform<0 ? deform*.22 : deform*.10,-.28,.18);
-          const gloss=Math.pow(normalLight,5)*(0.12+wet*.32);
-          const rr=this._sample(this.r,gx,gy),gg=this._sample(this.g,gx,gy),bb=this._sample(this.b,gx,gy);
-          const shade=clamp(.78+normalLight*.32+depthShade,0.52,1.18);
+          const amount=Math.max(0,this._catmull(this._smoothAmount,gx,gy));
+          const alpha=smoothstep(.004,.105,amount)*clamp(.34+amount*.34,0,.90);
+          if(alpha<.004){ data[o]=data[o+1]=data[o+2]=data[o+3]=0; continue; }
+          const wet=clamp(this._catmull(this._smoothWet,gx,gy),0,1);
+          const baseHeight=this._catmull(this._smoothHeight,gx,gy);
+          const deform=this._catmull(this._smoothDeform,gx,gy);
+          const eps=.58;
+          const zpx=this._catmull(this._smoothHeight,gx+eps,gy)+this._catmull(this._smoothDeform,gx+eps,gy)*.72;
+          const zmx=this._catmull(this._smoothHeight,gx-eps,gy)+this._catmull(this._smoothDeform,gx-eps,gy)*.72;
+          const zpy=this._catmull(this._smoothHeight,gx,gy+eps)+this._catmull(this._smoothDeform,gx,gy+eps)*.72;
+          const zmy=this._catmull(this._smoothHeight,gx,gy-eps)+this._catmull(this._smoothDeform,gx,gy-eps)*.72;
+          const zx=zpx-zmx, zy=zpy-zmy;
+          const normalLight=clamp(.58-zx*.40-zy*.46,0,1);
+          const depthShade=clamp(deform<0 ? deform*.20 : deform*.09,-.25,.16);
+          const edgeLift=Math.pow(1-smoothstep(.02,.20,amount),2)*.10;
+          const gloss=Math.pow(normalLight,6)*(0.10+wet*.34) + edgeLift;
+          const rr=clamp(this._catmull(this._smoothR,gx,gy),0,255);
+          const gg=clamp(this._catmull(this._smoothG,gx,gy),0,255);
+          const bb=clamp(this._catmull(this._smoothB,gx,gy),0,255);
+          const shade=clamp(.80+normalLight*.30+depthShade,0.56,1.16);
           data[o]=clamp(rr*shade+255*gloss,0,255);
           data[o+1]=clamp(gg*shade+255*gloss,0,255);
           data[o+2]=clamp(bb*shade+255*gloss,0,255);
-          data[o+3]=255*smoothstep(.006,.12,amount)*clamp(.30+amount*.30,0,.84);
+          data[o+3]=255*alpha;
         }
       }
       this._surfaceCtx.putImageData(this._imageData,0,0);
@@ -256,7 +328,7 @@
       ctx.save();
       ctx.imageSmoothingEnabled=true;
       ctx.imageSmoothingQuality='high';
-      ctx.filter='blur(0.65px)';
+      ctx.filter='blur(0.35px)';
       ctx.drawImage(this._surface,0,0,size,size);
       ctx.restore();
       this.dirty=false;

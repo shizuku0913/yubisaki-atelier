@@ -1292,7 +1292,10 @@
     stopPressFeelLoop();
     feelPressPoint=null;
     { const dish=dishes[selectedPaletteIndex]; if(dish && dish.physicsField) dish.physicsField.endPress(); }
-    settlePaintAt(lastFeelPoint,lastFeelVector);
+    // Shizuku M1.5: the elastic physics layer already performs the release rebound.
+    // Do not stamp sampled pixels back onto the pigment canvas here: repeated
+    // touches on diluted paint used to build opacity and look like new color.
+    // settlePaintAt(lastFeelPoint,lastFeelVector);
     stageDish.classList.remove('paint-press','paint-mixing');
     stageDish.classList.remove('paint-release');
     void stageDish.offsetWidth;
@@ -1355,7 +1358,7 @@
       storage, storageCtx: null, size: STAGE_SIZE, dpr: stageDpr,
       activeStamp:null, hasPaint:false, currentColor:null, mixProgress:0, fullyMixed:false,
       usedTubeNames:new Set(), hasGlitter:false, paintModel:null,
-      physicsField: PhysicsFieldModel ? new PhysicsFieldModel(56) : null
+      physicsField: PhysicsFieldModel ? new PhysicsFieldModel(72) : null
     });
 
     const btn = document.createElement('button');
