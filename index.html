@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="theme-color" content="#f59e0b">
-  <title>ゆびさきアトリエ — Shizuku Engine 4.0 α v0.7 Marble Mixing</title>
-  <link rel="stylesheet" href="css/main.css?v=4a7">
+  <title>ゆびさきアトリエ — Shizuku Engine 4.0 α v0.8 Paint Budget</title>
+  <link rel="stylesheet" href="css/main.css?v=4a8">
 </head>
 <body>
   <main class="app">
     <header class="topbar">
       <div>
-        <div class="eyebrow">SHIZUKU ENGINE 4.0 α · v0.7 MARBLE MIXING</div>
+        <div class="eyebrow">SHIZUKU ENGINE 4.0 α · v0.8 PAINT BUDGET</div>
         <h1>ぷに・にゅる えのぐ</h1>
       </div>
       <button id="resetButton" class="icon-button" type="button" aria-label="やりなおす">↻</button>
@@ -20,10 +20,10 @@
     <section class="workspace" aria-label="絵の具を触る場所">
       <canvas id="paintCanvas"></canvas>
       <div class="instruction">
-        <strong>ちがう色を たして、こねてみよう</strong>
-        <small>触れた境界から筋になり、こねるほど少しずつ色が混ざります</small>
+        <strong>なんどでも 色を たしてみよう</strong>
+        <small>少しずつ出せて、新しい色も何度でも混ぜられます</small>
       </div>
-      <div class="badge">MARBLE MIXING 1.0</div>
+      <div class="badge">PAINT BUDGET 2.0</div>
     </section>
 
     <section class="controls">
@@ -39,10 +39,10 @@
     </section>
 
     <div class="stats" aria-live="polite">
-      <span>絵の具量 <b id="massValue">100%</b></span>
-      <span>触った回数で増えません</span>
+      <span>えのぐ <b id="massValue">0かい 追加</b></span>
+      <span>新しい色の場所をいつも確保</span>
     </div>
   </main>
-  <script src="js/shizuku-engine.js?v=4a7"></script>
+  <script src="js/shizuku-engine.js?v=4a8"></script>
 </body>
 </html>

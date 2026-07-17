@@ -61,7 +61,13 @@
       this.lastRebondAt = 0;
       this.clumpTopologyDirty = false;
       this.maxParticles = 720;
-      this.initialParticles = 510;
+      this.initialParticles = 420;
+      this.spawnPerAdd = 54;
+      this.reserveParticles = 90;
+      this.softParticleLimit = this.maxParticles - this.reserveParticles;
+      this.addCount = 0;
+      this.lastAddedRgb = { r:232, g:74, b:104 };
+      this.lastCompactionAt = 0;
       this.hash = new SpatialHash(16);
       this.neighborBuffer = [];
       this.color = '#e84a68';
@@ -82,7 +88,7 @@
       this.particleSpriteCtx = this.particleSprite.getContext('2d');
       this.resize();
       this.bind();
-      this.seedBlob(.5, .55, 510);
+      this.seedBlob(.5, .55, this.initialParticles);
       requestAnimationFrame(t => this.frame(t));
     }
 
@@ -173,7 +179,8 @@
           clumpId,
           pigment: { r:this.rgb.r, g:this.rgb.g, b:this.rgb.b },
           bondDegree: 0,
-          detached: false
+          detached: false,
+          bornAt: performance.now()
         });
       }
       this.fixedMass = this.particles.length;
@@ -183,10 +190,82 @@
       return spawnCount;
     }
 
+    colorDistance(a, b) {
+      const dr=a.r-b.r, dg=a.g-b.g, db=a.b-b.b;
+      return Math.sqrt(dr*dr + dg*dg + db*db);
+    }
+
+    rebuildAllBonds() {
+      this.bonds.length = 0;
+      this.bondKeys.clear();
+      for (const p of this.particles) p.bondDegree = 0;
+      this.buildBondsForRange(0, this.particles.length);
+    }
+
+    compactPaint(removeCount, reason = 'budget') {
+      const safeMinimum = 300;
+      const count = Math.min(removeCount, Math.max(0, this.particles.length - safeMinimum));
+      if (count <= 0) return 0;
+
+      this.rebuildHash();
+      const now = performance.now();
+      const scored = [];
+      for (let i=0; i<this.particles.length; i++) {
+        if (this.pointer.grabbed.has(i)) continue;
+        const p=this.particles[i];
+        const near=this.hash.nearbyInto(p.x,p.y,this.neighborBuffer);
+        let close=0, colourSpread=0;
+        for (const j of near) {
+          if (j===i) continue;
+          const q=this.particles[j];
+          const d=Math.hypot(q.x-p.x,q.y-p.y);
+          if (d<this.particleRadius*1.75) {
+            close++;
+            colourSpread += this.colorDistance(p.pigment,q.pigment);
+          }
+        }
+        const speed=Math.hypot(p.vx,p.vy);
+        const age=Math.min(1,(now-(p.bornAt||0))/5000);
+        const uniformity=close ? 1-clamp(colourSpread/(close*180),0,1) : 0;
+        // Old, quiet particles in dense/uniform paint are least visible when
+        // consolidated. Edge particles, fresh colour and moving streaks survive.
+        const score=close*1.5 + uniformity*5 + age*2.5 - speed*2.2 - (p.detached?4:0);
+        scored.push([score,i]);
+      }
+      scored.sort((a,b)=>b[0]-a[0]);
+      const remove=new Set(scored.slice(0,count).map(v=>v[1]));
+      if (!remove.size) return 0;
+      this.particles=this.particles.filter((_,i)=>!remove.has(i));
+      this.pointer.grabbed.clear();
+      this.rebuildAllBonds();
+      this.fixedMass=this.particles.length;
+      this.lastCompactionAt=now;
+      this.renderDirty=true;
+      return remove.size;
+    }
+
     addPaint() {
-      const x = .5 + (Math.random() - .5) * .12;
-      const y = .54 + (Math.random() - .5) * .08;
-      this.seedBlob(x, y, 180);
+      const colourChanged=this.colorDistance(this.rgb,this.lastAddedRgb)>42;
+      // A new colour gets priority: gently consolidate old, settled paint so
+      // children can always introduce another pigment. Same-colour taps use
+      // smaller portions, giving a much wider range of amounts.
+      if (colourChanged && this.particles.length>470) this.compactPaint(24,'new-colour');
+
+      const needed=Math.max(0, this.particles.length + this.spawnPerAdd - this.softParticleLimit);
+      if (needed>0) this.compactPaint(Math.max(needed, this.spawnPerAdd),'reserve');
+
+      // The hard cap is never exceeded. If consolidation could not free enough
+      // slots, recycle another settled patch rather than disabling the button.
+      const hardNeeded=Math.max(0, this.particles.length + this.spawnPerAdd - this.maxParticles);
+      if (hardNeeded>0) this.compactPaint(hardNeeded + 12,'hard-cap');
+
+      const x = .5 + (Math.random() - .5) * .22;
+      const y = .54 + (Math.random() - .5) * .14;
+      const added=this.seedBlob(x, y, this.spawnPerAdd);
+      this.addCount++;
+      this.lastAddedRgb={...this.rgb};
+      this.updateMassLabel();
+      return added;
     }
 
     bind() {
@@ -693,12 +772,11 @@
 
     updateMassLabel() {
       const el=document.getElementById('massValue');
-      if (el) el.textContent=`${Math.round(this.particles.length / this.initialParticles * 100)}%`;
+      if (el) el.textContent=`${this.addCount}かい 追加`;
       const button=document.getElementById('addPaintButton');
       if (button) {
-        const full=this.particles.length>=this.maxParticles;
-        button.disabled=full;
-        button.textContent=full ? 'えのぐは いっぱい' : '＋ えのぐを たす';
+        button.disabled=false;
+        button.textContent='＋ えのぐを たす';
       }
     }
 
@@ -730,5 +808,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.7 Marble Mixing 1.0');
+  console.info('Shizuku Engine 4.0 alpha v0.8 Paint Budget System');
 })();
