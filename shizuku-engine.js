@@ -50,6 +50,9 @@
       this.maskCtx = this.maskCanvas.getContext('2d', { willReadFrequently: true });
       this.shadeCanvas = document.createElement('canvas');
       this.shadeCtx = this.shadeCanvas.getContext('2d');
+      this.colorCanvas = document.createElement('canvas');
+      this.colorCtx = this.colorCanvas.getContext('2d');
+      this.colorBuckets = new Map();
       this.particles = [];
       this.bonds = [];
       this.bondKeys = new Set();
@@ -107,8 +110,8 @@
       this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
       this.w = this.canvas.width;
       this.h = this.canvas.height;
-      this.maskCanvas.width = this.shadeCanvas.width = Math.max(180, Math.round(this.w * this.renderScale));
-      this.maskCanvas.height = this.shadeCanvas.height = Math.max(180, Math.round(this.h * this.renderScale));
+      this.maskCanvas.width = this.shadeCanvas.width = this.colorCanvas.width = Math.max(180, Math.round(this.w * this.renderScale));
+      this.maskCanvas.height = this.shadeCanvas.height = this.colorCanvas.height = Math.max(180, Math.round(this.h * this.renderScale));
       this.sx = this.maskCanvas.width / this.w;
       this.sy = this.maskCanvas.height / this.h;
       this.particleRadius = clamp(Math.min(this.w, this.h) * .018, 7, 15);
@@ -362,6 +365,46 @@
       }
     }
 
+    mixPigments(sdt) {
+      // Pigment is transported between touching particles instead of replacing
+      // both colours at once. Gentle contact diffuses slowly; kneading and shear
+      // accelerate exchange, leaving visible marbling before a uniform result.
+      const pnt = this.pointer;
+      const fingerSpeed = Math.hypot(pnt.vx, pnt.vy);
+      const contactRadius = this.particleRadius * 1.72;
+      const contactRadius2 = contactRadius * contactRadius;
+      for (let i = 0; i < this.particles.length; i++) {
+        const a = this.particles[i];
+        const near = this.hash.nearbyInto(a.x, a.y, this.neighborBuffer);
+        for (const j of near) {
+          if (j <= i) continue;
+          const b = this.particles[j];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 <= .0001 || d2 > contactRadius2) continue;
+
+          const closeness = 1 - Math.sqrt(d2) / contactRadius;
+          const relativeSpeed = Math.hypot(b.vx - a.vx, b.vy - a.vy);
+          const nearFinger = pnt.down && (
+            Math.hypot(a.x - pnt.x, a.y - pnt.y) < contactRadius * 5.2 ||
+            Math.hypot(b.x - pnt.x, b.y - pnt.y) < contactRadius * 5.2
+          );
+          const knead = nearFinger ? clamp((relativeSpeed + fingerSpeed * .55) / 15, 0, 1) : 0;
+          const rate = (.055 + knead * .72) * closeness * sdt;
+          if (rate <= 0) continue;
+
+          const ar = a.pigment.r, ag = a.pigment.g, ab = a.pigment.b;
+          const br = b.pigment.r, bg = b.pigment.g, bb = b.pigment.b;
+          a.pigment.r += (br - ar) * rate;
+          a.pigment.g += (bg - ag) * rate;
+          a.pigment.b += (bb - ab) * rate;
+          b.pigment.r += (ar - br) * rate;
+          b.pigment.g += (ag - bg) * rate;
+          b.pigment.b += (ab - bb) * rate;
+        }
+      }
+    }
+
     rebuildHash() {
       this.hash.clear();
       for (let i=0;i<this.particles.length;i++) {
@@ -395,6 +438,7 @@
         }
 
         this.applyClumpBonds(sdt);
+        this.mixPigments(sdt);
         this.attemptRebond(performance.now());
 
         for (let i=0;i<this.particles.length;i++) {
@@ -540,8 +584,46 @@
       c.restore();
     }
 
+    renderColorField() {
+      const c = this.colorCtx;
+      const mw = this.colorCanvas.width, mh = this.colorCanvas.height;
+      c.clearRect(0, 0, mw, mh);
+      this.colorBuckets.clear();
+
+      // Quantisation keeps the number of draw-state changes low while retaining
+      // enough steps for visible red/blue/purple marbling.
+      for (const p of this.particles) {
+        const r = clamp(Math.round(p.pigment.r / 12) * 12, 0, 255);
+        const g = clamp(Math.round(p.pigment.g / 12) * 12, 0, 255);
+        const b = clamp(Math.round(p.pigment.b / 12) * 12, 0, 255);
+        const key = `${r},${g},${b}`;
+        let bucket = this.colorBuckets.get(key);
+        if (!bucket) {
+          bucket = { r, g, b, points: [] };
+          this.colorBuckets.set(key, bucket);
+        }
+        bucket.points.push(p);
+      }
+
+      const rr = this.particleRadius * 1.58 * Math.min(this.sx, this.sy);
+      c.save();
+      c.globalAlpha = .78;
+      for (const bucket of this.colorBuckets.values()) {
+        c.fillStyle = `rgb(${bucket.r},${bucket.g},${bucket.b})`;
+        c.beginPath();
+        for (const p of bucket.points) {
+          const x = p.x * this.sx, y = p.y * this.sy;
+          c.moveTo(x + rr, y);
+          c.arc(x, y, p.detached ? rr * .78 : rr, 0, Math.PI * 2);
+        }
+        c.fill();
+      }
+      c.restore();
+    }
+
     render() {
       this.renderMask();
+      this.renderColorField();
       const ctx=this.ctx;
       ctx.clearRect(0,0,this.w,this.h);
 
@@ -555,19 +637,27 @@
       ctx.fillRect(0,0,this.w,this.h);
       ctx.restore();
 
-      // Main paint body: continuous alpha field, no polygon outline and no stamp copying.
+      // Multi-pigment body. The colour field follows individual particles,
+      // while the density mask preserves one continuous wet paint surface.
       ctx.save();
-      ctx.imageSmoothingEnabled=true;
-      ctx.imageSmoothingQuality='high';
-      ctx.filter=`blur(${Math.max(1.8,this.particleRadius*.18)}px) contrast(155%)`;
-      ctx.drawImage(this.maskCanvas,0,0,this.w,this.h);
-      ctx.globalCompositeOperation='source-in';
-      const base=ctx.createLinearGradient(0,0,this.w,this.h);
-      const {r,g,b}=this.rgb;
-      base.addColorStop(0,`rgb(${clamp(r+34,0,255)},${clamp(g+30,0,255)},${clamp(b+24,0,255)})`);
-      base.addColorStop(.48,`rgb(${r},${g},${b})`);
-      base.addColorStop(1,`rgb(${clamp(r-38,0,255)},${clamp(g-35,0,255)},${clamp(b-30,0,255)})`);
-      ctx.fillStyle=base;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.filter = `blur(${Math.max(2.2,this.particleRadius*.22)}px) saturate(112%) contrast(118%)`;
+      ctx.drawImage(this.colorCanvas, 0, 0, this.w, this.h);
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.filter = `blur(${Math.max(1.5,this.particleRadius*.14)}px) contrast(160%)`;
+      ctx.drawImage(this.maskCanvas, 0, 0, this.w, this.h);
+      ctx.restore();
+
+      // Broad translucent lighting keeps mixed colours readable without flattening
+      // the marble streaks into a single gradient.
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-atop';
+      const bodyLight = ctx.createLinearGradient(0, 0, this.w, this.h);
+      bodyLight.addColorStop(0, 'rgba(255,255,255,.24)');
+      bodyLight.addColorStop(.48, 'rgba(255,255,255,.03)');
+      bodyLight.addColorStop(1, 'rgba(44,22,28,.18)');
+      ctx.fillStyle = bodyLight;
       ctx.fillRect(0,0,this.w,this.h);
       ctx.restore();
 
@@ -640,5 +730,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.6 Paint Clump 1.0');
+  console.info('Shizuku Engine 4.0 alpha v0.7 Marble Mixing 1.0');
 })();
