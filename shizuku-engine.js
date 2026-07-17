@@ -8,22 +8,34 @@
     constructor(cellSize) {
       this.cellSize = cellSize;
       this.cells = new Map();
+      this.activeBuckets = [];
     }
-    clear() { this.cells.clear(); }
-    key(x, y) { return `${Math.floor(x / this.cellSize)},${Math.floor(y / this.cellSize)}`; }
+    clear() {
+      for (const bucket of this.activeBuckets) bucket.length = 0;
+      this.activeBuckets.length = 0;
+    }
+    key(cx, cy) { return cx + cy * 4096; }
     insert(i, x, y) {
-      const k = this.key(x, y);
-      let list = this.cells.get(k);
-      if (!list) this.cells.set(k, list = []);
-      list.push(i);
+      const cx = Math.floor(x / this.cellSize);
+      const cy = Math.floor(y / this.cellSize);
+      const k = this.key(cx, cy);
+      let bucket = this.cells.get(k);
+      if (!bucket) {
+        bucket = [];
+        this.cells.set(k, bucket);
+      }
+      if (bucket.length === 0) this.activeBuckets.push(bucket);
+      bucket.push(i);
     }
-    nearby(x, y) {
-      const cx = Math.floor(x / this.cellSize), cy = Math.floor(y / this.cellSize);
-      const out = [];
+    nearbyInto(x, y, out) {
+      out.length = 0;
+      const cx = Math.floor(x / this.cellSize);
+      const cy = Math.floor(y / this.cellSize);
       for (let oy = -1; oy <= 1; oy++) {
         for (let ox = -1; ox <= 1; ox++) {
-          const list = this.cells.get(`${cx + ox},${cy + oy}`);
-          if (list) out.push(...list);
+          const bucket = this.cells.get(this.key(cx + ox, cy + oy));
+          if (!bucket) continue;
+          for (let i = 0; i < bucket.length; i++) out.push(bucket[i]);
         }
       }
       return out;
@@ -39,13 +51,23 @@
       this.shadeCanvas = document.createElement('canvas');
       this.shadeCtx = this.shadeCanvas.getContext('2d');
       this.particles = [];
+      this.maxParticles = 720;
+      this.initialParticles = 510;
       this.hash = new SpatialHash(16);
+      this.neighborBuffer = [];
       this.color = '#e84a68';
       this.rgb = this.hexToRgb(this.color);
       this.pointer = { down:false, id:null, x:0, y:0, px:0, py:0, vx:0, vy:0, pressure:.7, justReleased:0, grabbed:new Map() };
       this.fixedMass = 0;
       this.lastTime = performance.now();
       this.renderScale = 0.42;
+      this.awake = true;
+      this.sleepAt = this.lastTime + 2200;
+      this.renderDirty = true;
+      this.lastRenderTime = 0;
+      this.targetRenderInterval = 1000 / 30;
+      this.particleSprite = document.createElement('canvas');
+      this.particleSpriteCtx = this.particleSprite.getContext('2d');
       this.resize();
       this.bind();
       this.seedBlob(.5, .55, 510);
@@ -56,7 +78,18 @@
       const n = parseInt(hex.slice(1), 16);
       return { r:(n>>16)&255, g:(n>>8)&255, b:n&255 };
     }
-    setColor(hex) { this.color = hex; this.rgb = this.hexToRgb(hex); }
+    setColor(hex) {
+      this.color = hex;
+      this.rgb = this.hexToRgb(hex);
+      this.renderDirty = true;
+      this.wake(350);
+    }
+
+    wake(extraMs = 1800) {
+      this.awake = true;
+      this.sleepAt = performance.now() + extraMs;
+      this.renderDirty = true;
+    }
 
     resize() {
       const rect = this.canvas.getBoundingClientRect();
@@ -71,19 +104,46 @@
       this.sy = this.maskCanvas.height / this.h;
       this.particleRadius = clamp(Math.min(this.w, this.h) * .018, 7, 15);
       this.hash.cellSize = this.particleRadius * 2.15;
+      this.buildParticleSprite();
+      this.wake(600);
+    }
+
+    buildParticleSprite() {
+      const rr = Math.max(2, this.particleRadius * 2.45 * Math.min(this.sx, this.sy));
+      const size = Math.ceil(rr * 2 + 4);
+      this.particleSprite.width = size;
+      this.particleSprite.height = size;
+      const c = this.particleSpriteCtx;
+      const center = size / 2;
+      const g = c.createRadialGradient(center, center, 0, center, center, rr);
+      g.addColorStop(0, 'rgba(255,255,255,.18)');
+      g.addColorStop(.48, 'rgba(255,255,255,.12)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      c.clearRect(0, 0, size, size);
+      c.fillStyle = g;
+      c.fillRect(0, 0, size, size);
+      this.spriteHalf = size / 2;
     }
 
     reset() {
       this.particles.length = 0;
-      this.seedBlob(.5, .55, 510);
+      this.pointer.grabbed.clear();
+      this.seedBlob(.5, .55, this.initialParticles);
+      this.wake(2200);
     }
 
     seedBlob(nx, ny, amount = 320) {
+      const available = Math.max(0, this.maxParticles - this.particles.length);
+      const spawnCount = Math.min(amount, available);
+      if (spawnCount === 0) {
+        this.updateMassLabel();
+        return 0;
+      }
       const cx = nx * this.w, cy = ny * this.h;
       const radius = Math.min(this.w, this.h) * .145;
       const golden = Math.PI * (3 - Math.sqrt(5));
-      for (let i = 0; i < amount; i++) {
-        const q = Math.sqrt((i + .5) / amount);
+      for (let i = 0; i < spawnCount; i++) {
+        const q = Math.sqrt((i + .5) / spawnCount);
         const a = i * golden + Math.random() * .13;
         const jitter = .92 + Math.random() * .13;
         this.particles.push({
@@ -95,14 +155,14 @@
       }
       this.fixedMass = this.particles.length;
       this.updateMassLabel();
+      this.wake(2200);
+      return spawnCount;
     }
 
     addPaint() {
       const x = .5 + (Math.random() - .5) * .12;
       const y = .54 + (Math.random() - .5) * .08;
       this.seedBlob(x, y, 180);
-      this.fixedMass = this.particles.length;
-      this.updateMassLabel();
     }
 
     bind() {
@@ -116,6 +176,7 @@
         this.canvas.setPointerCapture(e.pointerId);
         Object.assign(this.pointer, { down:true, id:e.pointerId, x:p.x, y:p.y, px:p.x, py:p.y, vx:0, vy:0, pressure:e.pressure || .72 });
         this.beginGrab();
+        this.wake(2200);
       });
       this.canvas.addEventListener('pointermove', e => {
         if (!this.pointer.down || e.pointerId !== this.pointer.id) return;
@@ -127,6 +188,7 @@
         this.pointer.vx = lerp(this.pointer.vx, dx, .68);
         this.pointer.vy = lerp(this.pointer.vy, dy, .68);
         this.pointer.pressure = e.pressure || .72;
+        this.wake(1600);
       });
       const up = e => {
         if (!this.pointer.down) return;
@@ -134,6 +196,7 @@
         this.pointer.down = false;
         this.pointer.justReleased = 1;
         this.pointer.grabbed.clear();
+        this.wake(1500);
       };
       this.canvas.addEventListener('pointerup', up);
       this.canvas.addEventListener('pointercancel', up);
@@ -187,7 +250,7 @@
           p.vy *= Math.pow(.055, sdt);
           p.vy += 11 * sdt;
 
-          const near=this.hash.nearby(p.x,p.y);
+          const near=this.hash.nearbyInto(p.x,p.y,this.neighborBuffer);
           let cx=0, cy=0, count=0;
           for (const j of near) {
             if (j===i) continue;
@@ -265,15 +328,10 @@
       c.clearRect(0,0,mw,mh);
       c.save();
       c.globalCompositeOperation='lighter';
-      const rr=this.particleRadius*2.45*Math.min(this.sx,this.sy);
+      const sprite=this.particleSprite;
+      const half=this.spriteHalf;
       for (const p of this.particles) {
-        const x=p.x*this.sx, y=p.y*this.sy;
-        const g=c.createRadialGradient(x,y,0,x,y,rr);
-        g.addColorStop(0,'rgba(255,255,255,.18)');
-        g.addColorStop(.48,'rgba(255,255,255,.12)');
-        g.addColorStop(1,'rgba(255,255,255,0)');
-        c.fillStyle=g;
-        c.fillRect(x-rr,y-rr,rr*2,rr*2);
+        c.drawImage(sprite,p.x*this.sx-half,p.y*this.sy-half);
       }
       c.restore();
     }
@@ -341,14 +399,30 @@
 
     updateMassLabel() {
       const el=document.getElementById('massValue');
-      if (el) el.textContent='100%';
+      if (el) el.textContent=`${Math.round(this.particles.length / this.initialParticles * 100)}%`;
+      const button=document.getElementById('addPaintButton');
+      if (button) {
+        const full=this.particles.length>=this.maxParticles;
+        button.disabled=full;
+        button.textContent=full ? 'えのぐは いっぱい' : '＋ えのぐを たす';
+      }
     }
 
     frame(t) {
       const dt=clamp((t-this.lastTime)/1000,.001,.033);
       this.lastTime=t;
-      this.step(dt);
-      this.render();
+
+      if (this.awake) {
+        this.step(dt);
+        this.renderDirty = true;
+        if (!this.pointer.down && t >= this.sleepAt) this.awake = false;
+      }
+
+      if (this.renderDirty && (t - this.lastRenderTime >= this.targetRenderInterval || !this.awake)) {
+        this.render();
+        this.renderDirty = false;
+        this.lastRenderTime = t;
+      }
       requestAnimationFrame(n=>this.frame(n));
     }
   }
@@ -362,5 +436,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.2 Nyuru');
+  console.info('Shizuku Engine 4.0 alpha v0.3 Performance Stabilization');
 })();
