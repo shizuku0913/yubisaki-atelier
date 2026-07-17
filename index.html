@@ -1,153 +1,50 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>ゆびさきアトリエ</title>
-<meta name="theme-color" content="#ff9f1c">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="assets/icons/icon-192.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Kaisei+Decol&family=Zen+Maru+Gothic:wght@400;500;700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/main.css?v=3.0.0-m1-6">
-
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#ff9f1c">
+  <title>ゆびさきアトリエ — Shizuku Rebuild M1</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="css/main.css?v=rebuild-m1">
 </head>
 <body>
-<div class="app">
-  <div class="toprow">
-    <button class="mode-toggle-btn" id="modeToggleBtn" title="がめんをきりかえる">
-      <span id="modeToggleIcon">🖌️</span><span id="modeToggleLabel">おえかきへ</span>
-    </button>
-    <span id="miniPaletteSlot"><div class="mini-palette" id="miniPalette"></div></span>
-    <button class="lock-btn mix-only" id="encyclopediaBtn" title="いろずかん">📖</button>
-    <button class="lock-btn mix-only" id="lockBtn" title="がめんをロック">🔓</button>
-    <button class="toprow-pill draw-only" id="paletteMenuBtn" title="パレット" style="margin-left:auto;">🎨<span>パレット</span></button>
-    <button class="toprow-pill draw-only" id="brushMenuBtn" title="ふで">🖌️<span>ふで</span></button>
-    <button class="toprow-pill draw-only" id="clearCanvasBtn" title="きれいにする">🧹<span>けす</span></button>
-    <button class="toprow-pill draw-only" id="settingsMenuBtn" title="せってい">⚙️<span>せってい</span></button>
-  </div>
-
-  <div class="dropdown-panel" id="palettePanel"></div>
-
-  <div class="dropdown-panel" id="brushPanel">
-    <div class="brush-size-row">
-      <button class="size-opt" data-size="6"><span class="dot" style="width:8px;height:8px;"></span></button>
-      <button class="size-opt selected" data-size="14"><span class="dot" style="width:15px;height:15px;"></span></button>
-      <button class="size-opt" data-size="24"><span class="dot" style="width:24px;height:24px;"></span></button>
-      <button class="size-opt" data-size="36"><span class="dot" style="width:34px;height:34px;"></span></button>
-    </div>
-    <div class="brush-actions-row">
-      <button class="draw-tool-btn" id="undoBtn" title="もどす">↩️ もどす</button>
-    </div>
-  </div>
-
-  <div class="dropdown-panel" id="settingsPanel">
-    <button class="draw-tool-btn" id="exportBtn" title="がぞうをほぞん">💾 ほぞん</button>
-    <button class="draw-tool-btn" id="settingsEncyclopediaBtn" title="いろずかん">📖 いろずかん</button>
-    <button class="draw-tool-btn" id="settingsLockBtn" title="がめんをロック">🔒 ロック</button>
-  </div>
-
-  <div class="screen active" id="screenMix">
-    <div class="tube-row" id="tubeRow"></div>
-
-    <div class="stage" id="stage">
-      <div class="stage-zone zone-pinch">
-        <div class="zone-label">
-          <span class="arrow-in left">➜</span>
-          <span class="zone-icon pinch-icon"><span class="pinch-emoji">🤏</span><span class="mini-finger a"></span><span class="mini-finger b"></span></span>
-          <span class="arrow-in right">➜</span>
-        </div>
-        <div class="stage-tube" id="stageTube">
-          <div class="pinch-hint" id="pinchHint"><span class="finger a"></span><span class="finger b"></span></div>
-          <div class="stage-tube-cap" id="stageCap"></div>
-          <div class="stage-tube-neck"></div>
-          <div class="stage-tube-body">
-            <div class="stage-tube-face"><span class="eye"></span><span class="eye"></span></div>
-            <div class="stage-tube-fold"></div>
-          </div>
-          <div class="stage-tube-tip" id="stageTip"></div>
-        </div>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">SHIZUKU REBUILD M1</div>
+        <h1>なめらかな えのぐ</h1>
       </div>
+      <button id="resetButton" class="icon-button" type="button" aria-label="やりなおす">↻</button>
+    </header>
 
-      <div class="stage-zone zone-mix">
-        <div class="stage-dish selected" id="stageDish">
-          <div class="dish-base"></div>
-          <div class="dish-scallop"></div>
-          <div class="stage-dish-badge" id="stageDishBadge">1</div>
-          <div class="stage-dish-star" id="stageDishStar">⭐</div>
-          <canvas id="stageCanvas"></canvas>
-          <canvas id="physicsCanvas" aria-hidden="true"></canvas>
-          <button class="dish-wash" id="washDishBtn" title="このパレットをあらう">🧽</button>
-          <button class="dish-tool" id="sparkleBtn" title="ラメをまぜる" style="left:-6px; top:-6px;">✨</button>
-        </div>
-        <div class="zone-label">
-          <span class="zone-icon swirl-icon">
-            <span class="swirl-finger">👆</span>
-            <span class="swirl-dot"></span>
-            <span class="swirl-arrowhead">▸</span>
-          </span>
-        </div>
+    <section class="workspace" aria-label="絵の具を触る場所">
+      <canvas id="paintCanvas"></canvas>
+      <div id="emptyHint" class="empty-hint">
+        <span class="finger">☝️</span>
+        <strong>えのぐを おしてみよう</strong>
+        <small>おして「ぷに」・はなして「ぷるん」</small>
       </div>
-    </div>
-  </div>
+      <div class="version-chip">旧エンジン不使用</div>
+    </section>
 
-  <div class="screen" id="screenDraw">
-    <div class="canvas-panel">
-      <div class="paper-wrap">
-        <canvas id="drawCanvas"></canvas>
+    <section class="controls" aria-label="絵の具の操作">
+      <div class="colors" role="group" aria-label="色をえらぶ">
+        <button class="color selected" data-color="#ef476f" style="--c:#ef476f" aria-label="あか"></button>
+        <button class="color" data-color="#ff9f1c" style="--c:#ff9f1c" aria-label="だいだい"></button>
+        <button class="color" data-color="#ffd166" style="--c:#ffd166" aria-label="きいろ"></button>
+        <button class="color" data-color="#06d6a0" style="--c:#06d6a0" aria-label="みどり"></button>
+        <button class="color" data-color="#118ab2" style="--c:#118ab2" aria-label="あお"></button>
+        <button class="color" data-color="#8b5cf6" style="--c:#8b5cf6" aria-label="むらさき"></button>
       </div>
-    </div>
-  </div>
-</div>
+      <button id="addPaintButton" class="add-button" type="button">
+        <span>＋</span> えのぐを だす
+      </button>
+    </section>
 
-<div class="toast" id="toast"></div>
-<div class="lock-overlay" id="lockOverlay">
-  <div class="lock-card">🔒<br>タップしてロックかいじょ</div>
-</div>
-
-<div class="discovery-card" id="discoveryCard"></div>
-
-<div class="export-overlay" id="exportOverlay">
-  <div class="export-panel">
-    <div class="export-title">長押しして保存してね</div>
-    <img id="exportImage" alt="かいた絵">
-    <button class="export-close" id="exportCloseBtn">とじる</button>
-  </div>
-</div>
-
-<div class="ency-overlay" id="encyclopediaOverlay">
-  <div class="ency-panel">
-    <div class="ency-header">
-      <span>いろずかん <b id="encyclopediaCount">0 / 0</b></span>
-      <span class="ency-reset-hint">3びょう<br>長押し</span>
-      <button class="ency-reset" id="encyclopediaResetBtn" title="3びょう長押しでリセット"><span class="reset-fill"></span><span class="reset-icon">🗑️</span></button>
-      <button class="ency-close" id="encyclopediaCloseBtn">✕</button>
-    </div>
-    <div class="ency-hint" id="encyclopediaHint">見つけた色をタップすると、その色をパレットに出せるよ</div>
-    <div class="ency-nav" id="encyclopediaNav"></div>
-    <div class="ency-grid" id="encyclopediaGrid"></div>
-  </div>
-</div>
-
-<div class="reset-confirm-overlay" id="resetConfirmOverlay">
-  <div class="reset-confirm-card">
-    <div class="reset-confirm-text">本当に消す？</div>
-    <div class="reset-confirm-buttons">
-      <button class="reset-confirm-yes" id="resetConfirmYes">うん、消す</button>
-      <button class="reset-confirm-no" id="resetConfirmNo">やめる</button>
-    </div>
-  </div>
-</div>
-
-<script src="js/colors.js?v=3.0.0-m1-6"></script>
-<script src="js/paintEngine.js?v=3.0.0-m1-6"></script>
-<script src="js/mixEngine.js?v=3.0.0-m1-6"></script>
-<script src="js/renderer.js?v=3.0.0-m1-6"></script>
-<script src="js/fingerDynamics.js?v=3.0.0-m1-6"></script>
-<script src="js/paintPhysics.js?v=3.0.0-m1-6"></script>
-<script src="js/app.js?v=3.0.0-m1-6"></script>
-
+    <p class="note">M1では単色だけを扱います。指で触れても、絵の具の量や色は増えません。</p>
+  </main>
+  <script src="js/shizuku-engine.js?v=rebuild-m1"></script>
+<script>if("serviceWorker" in navigator){addEventListener("load",()=>navigator.serviceWorker.register("./sw.js"));}</script>
+</body>
 </html>
