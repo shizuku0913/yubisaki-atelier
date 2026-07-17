@@ -78,6 +78,12 @@
       this.dirty=true;
     }
 
+
+    sampleAmount(nx,ny,nr=.04){
+      let sum=0, weight=0;
+      this.forCircle(nx,ny,nr,(i,x,y,w)=>{ const ww=w*w; sum+=this.amount[i]*ww; weight+=ww; });
+      return weight>0 ? sum/weight : 0;
+    }
     beginPress(nx,ny,nr=.13,strength=.95){
       this.activePress={x:clamp(nx,0,1),y:clamp(ny,0,1),r:nr,strength};
       this.pressAge=0;
@@ -280,8 +286,10 @@
       this._smoothInto(this.g,this._smoothG,1);
       this._smoothInto(this.b,this._smoothB,1);
 
-      const scale=4;
-      const w=this.n*scale,h=this.n*scale;
+      // Render at display-scale resolution so the implicit contour never
+      // exposes the simulation lattice on high-DPI phones.
+      const w=Math.max(512,Math.round(size*2));
+      const h=w;
       if(this._surface.width!==w||this._surface.height!==h){
         this._surface.width=w; this._surface.height=h;
         this._imageData=this._surfaceCtx.createImageData(w,h);
@@ -328,7 +336,7 @@
       ctx.save();
       ctx.imageSmoothingEnabled=true;
       ctx.imageSmoothingQuality='high';
-      ctx.filter='blur(0.35px)';
+      ctx.filter='blur(0.7px)';
       ctx.drawImage(this._surface,0,0,size,size);
       ctx.restore();
       this.dirty=false;

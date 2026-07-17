@@ -1,4 +1,4 @@
-/* ゆびさきアトリエ: Paint Renderer v1.1.1 */
+/* ゆびさきアトリエ: Paint Renderer v1.2.0 */
 (function (global) {
   'use strict';
 
@@ -19,22 +19,29 @@
   }
 
   function organicPath(ctx, x, y, radius, seed, viscosity) {
-    const points = 30;
-    const wobbleAmount = 0.012 + (1 - viscosity) * 0.045;
+    const count = 48;
+    const wobbleAmount = 0.010 + (1 - viscosity) * 0.032;
+    const pts = [];
+    for(let i=0;i<count;i+=1){
+      const angle=(i/count)*Math.PI*2;
+      const wobble=1
+        + wobbleAmount*Math.sin(angle*3+seed)
+        + wobbleAmount*.55*Math.sin(angle*5+seed*1.73);
+      pts.push({x:x+Math.cos(angle)*radius*wobble,y:y+Math.sin(angle)*radius*wobble});
+    }
     ctx.beginPath();
-    for (let i = 0; i <= points; i += 1) {
-      const angle = (i / points) * Math.PI * 2;
-      const wobble = 1
-        + wobbleAmount * Math.sin(angle * 3 + seed)
-        + wobbleAmount * 0.62 * Math.sin(angle * 5 + seed * 1.73);
-      const r = radius * wobble;
-      const px = x + Math.cos(angle) * r;
-      const py = y + Math.sin(angle) * r;
-      if (i === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
+    for(let i=0;i<count;i+=1){
+      const p0=pts[(i-1+count)%count], p1=pts[i], p2=pts[(i+1)%count], p3=pts[(i+2)%count];
+      if(i===0) ctx.moveTo(p1.x,p1.y);
+      ctx.bezierCurveTo(
+        p1.x+(p2.x-p0.x)/6, p1.y+(p2.y-p0.y)/6,
+        p2.x-(p3.x-p1.x)/6, p2.y-(p3.y-p1.y)/6,
+        p2.x,p2.y
+      );
     }
     ctx.closePath();
   }
+
 
   class PaintRenderer {
     constructor(context) {
