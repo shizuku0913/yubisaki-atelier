@@ -58,7 +58,9 @@
       this.color = '#e84a68';
       this.rgb = this.hexToRgb(this.color);
       this.pointer = { down:false, id:null, x:0, y:0, px:0, py:0, vx:0, vy:0, pressure:.7, justReleased:0, grabbed:new Map(), anchorX:0, anchorY:0, lastCapture:0 };
-      this.maxGrabbed = 78;
+      this.maxGrabbed = 82;
+      this.viscosity = 0.76;
+      this.elasticRecovery = 0.34;
       this.fixedMass = 0;
       this.lastTime = performance.now();
       this.renderScale = 0.42;
@@ -151,7 +153,9 @@
           x: cx + Math.cos(a) * radius * q * jitter,
           y: cy + Math.sin(a) * radius * q * jitter * .88,
           px: 0, py: 0, vx: 0, vy: 0,
-          restX: 0, restY: 0
+          restX: 0, restY: 0,
+          strain: 0,
+          memoryVx: 0, memoryVy: 0
         });
       }
       this.fixedMass = this.particles.length;
@@ -273,13 +277,21 @@
           const p=this.particles[i];
           p.px=p.x; p.py=p.y;
 
-          // Heavy paint: strong damping, tiny gravity, a little elastic memory.
-          p.vx *= Math.pow(.055, sdt);
-          p.vy *= Math.pow(.055, sdt);
-          p.vy += 11 * sdt;
+          // Viscosity 1.0: velocity does not disappear instantly. A small
+          // history term remains, so the paint arrives and stops just after the finger.
+          const speedNow=Math.hypot(p.vx,p.vy);
+          const shear=clamp(speedNow/18,0,1);
+          const viscousDrag=lerp(.040,.105,shear);
+          p.vx *= Math.pow(viscousDrag, sdt);
+          p.vy *= Math.pow(viscousDrag, sdt);
+          p.memoryVx=lerp(p.memoryVx,p.vx,.12);
+          p.memoryVy=lerp(p.memoryVy,p.vy,.12);
+          p.vx += p.memoryVx*.018;
+          p.vy += p.memoryVy*.018;
+          p.vy += 10 * sdt;
 
           const near=this.hash.nearbyInto(p.x,p.y,this.neighborBuffer);
-          let cx=0, cy=0, count=0;
+          let cx=0, cy=0, cvx=0, cvy=0, count=0;
           for (const j of near) {
             if (j===i) continue;
             const q=this.particles[j];
@@ -292,13 +304,20 @@
             // Incompressibility: particles cannot pile into a hard angular cluster.
             const push=overlap*34*sdt;
             p.vx += dx*push; p.vy += dy*push;
-            cx += q.x; cy += q.y; count++;
+            cx += q.x; cy += q.y; cvx += q.vx; cvy += q.vy; count++;
           }
           if (count>1) {
-            cx/=count; cy/=count;
-            // Cohesion produces the sticky "nyuru" pull without freezing the blob.
-            p.vx += (cx-p.x)*0.60*sdt;
-            p.vy += (cy-p.y)*0.60*sdt;
+            cx/=count; cy/=count; cvx/=count; cvy/=count;
+            // Local momentum sharing is the core of the viscous feel: nearby paint
+            // resists sliding apart and begins moving as one heavy, wet mass.
+            const velocityMatch=(.90 + this.viscosity*1.45)*(1-shear*.34);
+            p.vx += (cvx-p.vx)*velocityMatch*sdt;
+            p.vy += (cvy-p.vy)*velocityMatch*sdt;
+            p.vx += (cx-p.x)*0.66*sdt;
+            p.vy += (cy-p.y)*0.66*sdt;
+
+            const localStretch=Math.hypot(cx-p.x,cy-p.y)/Math.max(1,target);
+            p.strain=lerp(p.strain,clamp(localStretch,0,1.8),.08);
           }
 
           // Grip propagates through nearby paint. A directly held patch drags
@@ -344,23 +363,31 @@
             const gx=targetX-p.x, gy=targetY-p.y;
             const stretch=Math.hypot(gx,gy);
             const fingerSpeed=Math.hypot(pnt.vx,pnt.vy);
-            const spring=12 + grab.strength*15;
+            // Slow motion behaves more like a long sticky thread; fast motion
+            // shear-thins and becomes easier to tear.
+            const slowPull=1-clamp(fingerSpeed/22,0,1);
+            const spring=(12 + grab.strength*15)*(1 + slowPull*.34);
             p.vx += gx*spring*sdt;
             p.vy += gy*spring*sdt;
             p.vx += pnt.vx*(.09 + grab.strength*.13);
             p.vy += pnt.vy*(.09 + grab.strength*.13);
 
-            const speedPenalty=clamp(fingerSpeed/24,0,.68);
-            const breakDistance=pointerRadius*(1.82 - speedPenalty + grab.strength*.25);
+            const speedPenalty=clamp(fingerSpeed/22,0,.76);
+            const ageToughness=clamp(grab.age*.26,0,.22);
+            const breakDistance=pointerRadius*(1.96 - speedPenalty + grab.strength*.28 + slowPull*.26 + ageToughness);
             if (stretch>breakDistance) pnt.grabbed.delete(i);
           }
-          if (!pnt.down && pnt.justReleased>0 && dist<pointerRadius*1.15) {
-            const t=1-dist/(pointerRadius*1.15);
-            // A short elastic return pulse: "purun".
-            p.vx += -dx*1.1*t*pnt.justReleased*sdt;
-            p.vy += -dy*1.1*t*pnt.justReleased*sdt;
+          if (!pnt.down && pnt.justReleased>0 && dist<pointerRadius*1.28) {
+            const t=1-dist/(pointerRadius*1.28);
+            // The stretched mass relaxes gradually rather than snapping back.
+            const recovery=this.elasticRecovery*(.55+p.strain*.45);
+            p.vx += -dx*recovery*t*pnt.justReleased*sdt;
+            p.vy += -dy*recovery*t*pnt.justReleased*sdt;
+            p.vx += p.memoryVx*.025*t;
+            p.vy += p.memoryVy*.025*t;
           }
 
+          p.strain*=Math.pow(.20,sdt);
           p.x += p.vx;
           p.y += p.vy;
           const margin=pr*1.2;
@@ -429,7 +456,7 @@
       ctx.fillRect(0,0,this.w,this.h);
       ctx.restore();
 
-      // Fine wet glints follow moving particles and make stretched areas feel viscous.
+      // Fine wet glints follow moving particles and expose viscous flow direction.
       ctx.save();
       ctx.globalCompositeOperation='screen';
       ctx.globalAlpha=.16;
@@ -487,5 +514,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.4 Grip Constraint 2.0');
+  console.info('Shizuku Engine 4.0 alpha v0.5 Viscosity 1.0');
 })();

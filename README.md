@@ -1,8 +1,8 @@
-# Shizuku Engine 4.0 α — v0.4 “Grip”
+# Shizuku Engine 4.0 α — v0.5 “Grip”
 
 **Shizuku Engine** は、子どもが「本物の絵の具を指で触っている感覚」をデジタル上で再現することを目指す、**ゆびさきあとりえ**専用のペイント物理エンジンです。
 
-## v0.4 Grip Constraint 2.0
+## v0.5 Grip Constraint 2.0
 
 - 指そのものではなく、少し遅れて追従する「グリップアンカー」を追加
 - 指で触れた絵の具を面として保持し、最大78粒子まで段階的につかむ
@@ -25,3 +25,12 @@
 - Viscosity Model 1.0
 - Surface Renderer
 - Multi-color Mixing
+
+
+## v0.5 — Viscosity 1.0
+
+- Added local velocity matching so nearby paint moves as a cohesive wet mass
+- Added short motion memory for delayed follow-through and delayed stopping
+- Added shear-thinning: slow pulls stretch farther, fast pulls tear sooner
+- Added strain-aware elastic relaxation after release
+- Preserved v0.3 performance limits and v0.4 grip constraints
