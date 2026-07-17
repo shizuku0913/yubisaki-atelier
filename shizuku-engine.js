@@ -76,6 +76,9 @@
       this.maxGrabbed = 82;
       this.viscosity = 0.76;
       this.elasticRecovery = 0.34;
+      this.baseDryingRate = 0.010;
+      this.kneadSofteningRate = 0.54;
+      this.maxDryness = 0.72;
       this.fixedMass = 0;
       this.lastTime = performance.now();
       this.renderScale = 0.42;
@@ -176,6 +179,11 @@
           restX: 0, restY: 0,
           strain: 0,
           memoryVx: 0, memoryVy: 0,
+          softness: 0.56 + Math.random() * 0.08,
+          dryness: 0.08 + Math.random() * 0.04,
+          thickness: 1,
+          touchMemory: 0,
+          lastTouchedAt: performance.now(),
           clumpId,
           pigment: { r:this.rgb.r, g:this.rgb.g, b:this.rgb.b },
           bondDegree: 0,
@@ -391,8 +399,10 @@
         const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
         const separating=(rvx*dx+rvy*dy)/d;
         const edgeWeakness=((a.bondDegree<=2)||(b.bondDegree<=2)) ? .16 : 0;
-        const tearAt=.78 + bond.strength*.20 - edgeWeakness;
-        const violent=separating>2.8 || fingerSpeed>13;
+        const meanSoftness=(a.softness+b.softness)*.5;
+        const meanDryness=(a.dryness+b.dryness)*.5;
+        const tearAt=.72 + bond.strength*.20 + meanSoftness*.18 - meanDryness*.24 - edgeWeakness;
+        const violent=separating>(2.55-meanDryness*.65) || fingerSpeed>(13-meanDryness*3.2);
         if (stretch>tearAt && violent) {
           bond.active=false;
           this.bondKeys.delete(this.bondKey(bond.a,bond.b));
@@ -407,10 +417,10 @@
           continue;
         }
         const nx=dx/d, ny=dy/d;
-        const spring=clamp(stretch,-.24,1.15)*24*bond.strength*sdt;
+        const spring=clamp(stretch,-.24,1.15)*(20+meanDryness*12-meanSoftness*4)*bond.strength*sdt;
         a.vx+=nx*spring; a.vy+=ny*spring;
         b.vx-=nx*spring; b.vy-=ny*spring;
-        const match=(.20 + this.viscosity*.28)*bond.strength;
+        const match=(.16 + this.viscosity*.28 + meanSoftness*.12 - meanDryness*.10)*bond.strength;
         const mvx=(b.vx-a.vx)*match*sdt, mvy=(b.vy-a.vy)*match*sdt;
         a.vx+=mvx; a.vy+=mvy; b.vx-=mvx; b.vy-=mvy;
       }
@@ -444,6 +454,50 @@
       }
     }
 
+    updateLivingPaint(sdt, now) {
+      const pnt = this.pointer;
+      const fingerSpeed = Math.hypot(pnt.vx, pnt.vy);
+      const touchRadius = Math.min(this.w, this.h) * .145;
+      const densityRadius = this.particleRadius * 2.1;
+      const densityRadius2 = densityRadius * densityRadius;
+
+      for (let i = 0; i < this.particles.length; i++) {
+        const p = this.particles[i];
+        const near = this.hash.nearbyInto(p.x, p.y, this.neighborBuffer);
+        let dense = 0;
+        for (const j of near) {
+          if (j === i) continue;
+          const q = this.particles[j];
+          const dx = q.x - p.x, dy = q.y - p.y;
+          if (dx * dx + dy * dy < densityRadius2) dense++;
+        }
+
+        // Thickness is derived from local packing. It rises gradually so piled
+        // paint looks heavier without adding more simulation particles.
+        const targetThickness = clamp(.82 + dense * .055, .82, 1.48);
+        p.thickness = lerp(p.thickness, targetThickness, .08);
+
+        const distanceToFinger = Math.hypot(p.x - pnt.x, p.y - pnt.y);
+        const touched = pnt.down && distanceToFinger < touchRadius;
+        if (touched) {
+          const proximity = 1 - distanceToFinger / touchRadius;
+          const knead = proximity * clamp(.28 + fingerSpeed / 15, .28, 1);
+          p.softness = clamp(p.softness + this.kneadSofteningRate * knead * sdt, .18, 1);
+          p.dryness = clamp(p.dryness - .48 * knead * sdt, 0, this.maxDryness);
+          p.touchMemory = clamp(p.touchMemory + (0.42 + knead) * sdt, 0, 1);
+          p.lastTouchedAt = now;
+        } else {
+          const stillness = 1 - clamp(Math.hypot(p.vx, p.vy) / 4, 0, 1);
+          const untouchedFor = Math.max(0, now - (p.lastTouchedAt || now));
+          const dryingDelay = clamp((untouchedFor - 900) / 4500, 0, 1);
+          p.dryness = clamp(p.dryness + this.baseDryingRate * stillness * dryingDelay * sdt, 0, this.maxDryness);
+          const restingSoftness = .58 - p.dryness * .34;
+          p.softness = lerp(p.softness, restingSoftness, .012 * stillness);
+          p.touchMemory *= Math.pow(.08, sdt);
+        }
+      }
+    }
+
     mixPigments(sdt) {
       // Pigment is transported between touching particles instead of replacing
       // both colours at once. Gentle contact diffuses slowly; kneading and shear
@@ -469,7 +523,8 @@
             Math.hypot(b.x - pnt.x, b.y - pnt.y) < contactRadius * 5.2
           );
           const knead = nearFinger ? clamp((relativeSpeed + fingerSpeed * .55) / 15, 0, 1) : 0;
-          const rate = (.055 + knead * .72) * closeness * sdt;
+          const materialMix = clamp(((a.softness + b.softness) * .5) * (1 - (a.dryness + b.dryness) * .42), .16, 1);
+          const rate = (.042 + knead * .72) * closeness * materialMix * sdt;
           if (rate <= 0) continue;
 
           const ar = a.pigment.r, ag = a.pigment.g, ab = a.pigment.b;
@@ -516,6 +571,7 @@
           }
         }
 
+        this.updateLivingPaint(sdt, performance.now());
         this.applyClumpBonds(sdt);
         this.mixPigments(sdt);
         this.attemptRebond(performance.now());
@@ -528,14 +584,15 @@
           // history term remains, so the paint arrives and stops just after the finger.
           const speedNow=Math.hypot(p.vx,p.vy);
           const shear=clamp(speedNow/18,0,1);
-          const viscousDrag=lerp(.040,.105,shear);
+          const materialDrag=clamp(.72 + p.softness*.22 - p.dryness*.26, .48, .96);
+          const viscousDrag=lerp(.040,.105,shear) * materialDrag;
           p.vx *= Math.pow(viscousDrag, sdt);
           p.vy *= Math.pow(viscousDrag, sdt);
           p.memoryVx=lerp(p.memoryVx,p.vx,.12);
           p.memoryVy=lerp(p.memoryVy,p.vy,.12);
           p.vx += p.memoryVx*.018;
           p.vy += p.memoryVy*.018;
-          p.vy += (p.detached ? 13 : 9) * sdt;
+          p.vy += (p.detached ? 13 : 9) * (1 + (p.thickness-1)*.22) * sdt;
 
           const near=this.hash.nearbyInto(p.x,p.y,this.neighborBuffer);
           let cx=0, cy=0, cvx=0, cvy=0, count=0;
@@ -557,11 +614,12 @@
             cx/=count; cy/=count; cvx/=count; cvy/=count;
             // Local momentum sharing is the core of the viscous feel: nearby paint
             // resists sliding apart and begins moving as one heavy, wet mass.
-            const velocityMatch=(.90 + this.viscosity*1.45)*(1-shear*.34);
+            const velocityMatch=(.72 + this.viscosity*1.36 + p.softness*.54 - p.dryness*.42)*(1-shear*.34);
             p.vx += (cvx-p.vx)*velocityMatch*sdt;
             p.vy += (cvy-p.vy)*velocityMatch*sdt;
-            p.vx += (cx-p.x)*0.66*sdt;
-            p.vy += (cy-p.y)*0.66*sdt;
+            const cohesion=.48 + p.dryness*.44 + p.thickness*.10;
+            p.vx += (cx-p.x)*cohesion*sdt;
+            p.vy += (cy-p.y)*cohesion*sdt;
 
             const localStretch=Math.hypot(cx-p.x,cy-p.y)/Math.max(1,target);
             p.strain=lerp(p.strain,clamp(localStretch,0,1.8),.08);
@@ -613,7 +671,7 @@
             // Slow motion behaves more like a long sticky thread; fast motion
             // shear-thins and becomes easier to tear.
             const slowPull=1-clamp(fingerSpeed/22,0,1);
-            const spring=(12 + grab.strength*15)*(1 + slowPull*.34);
+            const spring=(10 + grab.strength*14)*(1 + slowPull*.34)*(0.72+p.softness*.48-p.dryness*.18);
             p.vx += gx*spring*sdt;
             p.vy += gy*spring*sdt;
             p.vx += pnt.vx*(.09 + grab.strength*.13);
@@ -621,13 +679,13 @@
 
             const speedPenalty=clamp(fingerSpeed/22,0,.76);
             const ageToughness=clamp(grab.age*.26,0,.22);
-            const breakDistance=pointerRadius*(1.96 - speedPenalty + grab.strength*.28 + slowPull*.26 + ageToughness);
+            const breakDistance=pointerRadius*(1.78 - speedPenalty + grab.strength*.28 + slowPull*.34 + ageToughness + p.softness*.28 - p.dryness*.34);
             if (stretch>breakDistance) pnt.grabbed.delete(i);
           }
           if (!pnt.down && pnt.justReleased>0 && dist<pointerRadius*1.28) {
             const t=1-dist/(pointerRadius*1.28);
             // The stretched mass relaxes gradually rather than snapping back.
-            const recovery=this.elasticRecovery*(.55+p.strain*.45);
+            const recovery=this.elasticRecovery*(.44+p.strain*.40+p.touchMemory*.24)*(1-p.dryness*.28);
             p.vx += -dx*recovery*t*pnt.justReleased*sdt;
             p.vy += -dy*recovery*t*pnt.justReleased*sdt;
             p.vx += p.memoryVx*.025*t;
@@ -656,7 +714,7 @@
       const sprite=this.particleSprite;
       const half=this.spriteHalf;
       for (const p of this.particles) {
-        const scale=p.detached ? .82 : 1;
+        const scale=(p.detached ? .82 : 1) * clamp(.88 + (p.thickness-1)*.36, .82, 1.20);
         const sw=sprite.width*scale, sh=sprite.height*scale;
         c.drawImage(sprite,p.x*this.sx-sw/2,p.y*this.sy-sh/2,sw,sh);
       }
@@ -692,8 +750,9 @@
         c.beginPath();
         for (const p of bucket.points) {
           const x = p.x * this.sx, y = p.y * this.sy;
-          c.moveTo(x + rr, y);
-          c.arc(x, y, p.detached ? rr * .78 : rr, 0, Math.PI * 2);
+          const materialRadius = rr * (p.detached ? .78 : 1) * clamp(.92 + (p.thickness-1)*.30, .84, 1.18);
+          c.moveTo(x + materialRadius, y);
+          c.arc(x, y, materialRadius, 0, Math.PI * 2);
         }
         c.fill();
       }
@@ -749,6 +808,22 @@
       sheen.addColorStop(.62,'rgba(255,255,255,0)');
       ctx.fillStyle=sheen;
       ctx.fillRect(0,0,this.w,this.h);
+      ctx.restore();
+
+      // Drying subtly reduces the uniform wet sheen. The texture remains gentle
+      // so paint never becomes visually unusable for children.
+      ctx.save();
+      ctx.globalCompositeOperation='source-atop';
+      ctx.globalAlpha=.12;
+      ctx.fillStyle='rgba(255,255,255,.20)';
+      for(let i=0;i<this.particles.length;i+=23){
+        const p=this.particles[i];
+        if(p.dryness<.24) continue;
+        const r=this.particleRadius*(.10+p.dryness*.18);
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,r,0,Math.PI*2);
+        ctx.fill();
+      }
       ctx.restore();
 
       // Fine wet glints follow moving particles and expose viscous flow direction.
@@ -808,5 +883,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.8 Paint Budget System');
+  console.info('Shizuku Engine 4.0 alpha v0.9 Living Paint');
 })();
