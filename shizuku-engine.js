@@ -51,6 +51,12 @@
       this.shadeCanvas = document.createElement('canvas');
       this.shadeCtx = this.shadeCanvas.getContext('2d');
       this.particles = [];
+      this.bonds = [];
+      this.bondKeys = new Set();
+      this.maxBonds = 2600;
+      this.nextClumpId = 1;
+      this.lastRebondAt = 0;
+      this.clumpTopologyDirty = false;
       this.maxParticles = 720;
       this.initialParticles = 510;
       this.hash = new SpatialHash(16);
@@ -130,6 +136,9 @@
 
     reset() {
       this.particles.length = 0;
+      this.bonds.length = 0;
+      this.bondKeys.clear();
+      this.nextClumpId = 1;
       this.pointer.grabbed.clear();
       this.seedBlob(.5, .55, this.initialParticles);
       this.wake(2200);
@@ -142,6 +151,8 @@
         this.updateMassLabel();
         return 0;
       }
+      const startIndex = this.particles.length;
+      const clumpId = this.nextClumpId++;
       const cx = nx * this.w, cy = ny * this.h;
       const radius = Math.min(this.w, this.h) * .145;
       const golden = Math.PI * (3 - Math.sqrt(5));
@@ -155,10 +166,15 @@
           px: 0, py: 0, vx: 0, vy: 0,
           restX: 0, restY: 0,
           strain: 0,
-          memoryVx: 0, memoryVy: 0
+          memoryVx: 0, memoryVy: 0,
+          clumpId,
+          pigment: { r:this.rgb.r, g:this.rgb.g, b:this.rgb.b },
+          bondDegree: 0,
+          detached: false
         });
       }
       this.fixedMass = this.particles.length;
+      this.buildBondsForRange(startIndex, this.particles.length);
       this.updateMassLabel();
       this.wake(2200);
       return spawnCount;
@@ -241,6 +257,111 @@
       }
     }
 
+    bondKey(a, b) {
+      return a < b ? `${a}:${b}` : `${b}:${a}`;
+    }
+
+    addBond(a, b, restLength, strength = 1) {
+      if (a === b || this.bonds.length >= this.maxBonds) return false;
+      const key = this.bondKey(a, b);
+      if (this.bondKeys.has(key)) return false;
+      this.bondKeys.add(key);
+      this.bonds.push({ a, b, rest:restLength, strength, active:true, strain:0 });
+      this.particles[a].bondDegree++;
+      this.particles[b].bondDegree++;
+      return true;
+    }
+
+    buildBondsForRange(start, end) {
+      this.rebuildHash();
+      const linkRadius = this.particleRadius * 2.05;
+      const candidates = [];
+      for (let i = start; i < end; i++) {
+        const p = this.particles[i];
+        const near = this.hash.nearbyInto(p.x, p.y, this.neighborBuffer);
+        candidates.length = 0;
+        for (const j of near) {
+          if (j === i) continue;
+          const q = this.particles[j];
+          const d = Math.hypot(q.x-p.x, q.y-p.y);
+          if (d <= linkRadius) candidates.push([d, j]);
+        }
+        candidates.sort((a,b)=>a[0]-b[0]);
+        const desired = 4;
+        for (let n=0; n<Math.min(desired,candidates.length); n++) {
+          const [d,j] = candidates[n];
+          this.addBond(i,j,d, .82 + Math.random()*.26);
+        }
+      }
+    }
+
+    applyClumpBonds(sdt) {
+      const pnt = this.pointer;
+      const fingerSpeed = Math.hypot(pnt.vx,pnt.vy);
+      let broke = false;
+      for (const bond of this.bonds) {
+        if (!bond.active) continue;
+        const a=this.particles[bond.a], b=this.particles[bond.b];
+        const dx=b.x-a.x, dy=b.y-a.y;
+        const d=Math.max(.001,Math.hypot(dx,dy));
+        const stretch=(d-bond.rest)/Math.max(1,bond.rest);
+        bond.strain=lerp(bond.strain,Math.max(0,stretch),.18);
+        const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
+        const separating=(rvx*dx+rvy*dy)/d;
+        const edgeWeakness=((a.bondDegree<=2)||(b.bondDegree<=2)) ? .16 : 0;
+        const tearAt=.78 + bond.strength*.20 - edgeWeakness;
+        const violent=separating>2.8 || fingerSpeed>13;
+        if (stretch>tearAt && violent) {
+          bond.active=false;
+          this.bondKeys.delete(this.bondKey(bond.a,bond.b));
+          a.bondDegree=Math.max(0,a.bondDegree-1);
+          b.bondDegree=Math.max(0,b.bondDegree-1);
+          const impulse=Math.min(1.35,stretch*.72);
+          const nx=dx/d, ny=dy/d;
+          a.vx-=nx*impulse; a.vy-=ny*impulse;
+          b.vx+=nx*impulse; b.vy+=ny*impulse;
+          a.detached=a.bondDegree<2; b.detached=b.bondDegree<2;
+          broke=true;
+          continue;
+        }
+        const nx=dx/d, ny=dy/d;
+        const spring=clamp(stretch,-.24,1.15)*24*bond.strength*sdt;
+        a.vx+=nx*spring; a.vy+=ny*spring;
+        b.vx-=nx*spring; b.vy-=ny*spring;
+        const match=(.20 + this.viscosity*.28)*bond.strength;
+        const mvx=(b.vx-a.vx)*match*sdt, mvy=(b.vy-a.vy)*match*sdt;
+        a.vx+=mvx; a.vy+=mvy; b.vx-=mvx; b.vy-=mvy;
+      }
+      if (broke) this.clumpTopologyDirty=true;
+    }
+
+    attemptRebond(now) {
+      const pnt=this.pointer;
+      const fingerSpeed=Math.hypot(pnt.vx,pnt.vy);
+      if (!pnt.down || fingerSpeed>7 || now-this.lastRebondAt<150) return;
+      this.lastRebondAt=now;
+      this.rebuildHash();
+      const radius=this.particleRadius*1.72;
+      let made=0;
+      for (let i=0;i<this.particles.length && made<10;i++) {
+        const p=this.particles[i];
+        if (Math.hypot(p.x-pnt.x,p.y-pnt.y)>Math.min(this.w,this.h)*.15) continue;
+        const near=this.hash.nearbyInto(p.x,p.y,this.neighborBuffer);
+        for (const j of near) {
+          if (j<=i || made>=10) continue;
+          const q=this.particles[j];
+          const d=Math.hypot(q.x-p.x,q.y-p.y);
+          const rel=Math.hypot(q.vx-p.vx,q.vy-p.vy);
+          if (d<radius && rel<2.4 && this.addBond(i,j,d,.72)) {
+            made++;
+            p.detached=q.detached=false;
+            const merged=Math.min(p.clumpId,q.clumpId);
+            p.clumpId=q.clumpId=merged;
+          }
+        }
+      }
+    }
+
     rebuildHash() {
       this.hash.clear();
       for (let i=0;i<this.particles.length;i++) {
@@ -273,6 +394,9 @@
           }
         }
 
+        this.applyClumpBonds(sdt);
+        this.attemptRebond(performance.now());
+
         for (let i=0;i<this.particles.length;i++) {
           const p=this.particles[i];
           p.px=p.x; p.py=p.y;
@@ -288,7 +412,7 @@
           p.memoryVy=lerp(p.memoryVy,p.vy,.12);
           p.vx += p.memoryVx*.018;
           p.vy += p.memoryVy*.018;
-          p.vy += 10 * sdt;
+          p.vy += (p.detached ? 13 : 9) * sdt;
 
           const near=this.hash.nearbyInto(p.x,p.y,this.neighborBuffer);
           let cx=0, cy=0, cvx=0, cvy=0, count=0;
@@ -332,7 +456,7 @@
             }
             if (linked) {
               tx/=linked; ty/=linked;
-              const coupling=Math.min(1, linked*.22);
+              const coupling=Math.min(1, linked*.22) * (p.detached ? .48 : 1);
               p.vx += (tx-p.x)*1.75*coupling*sdt;
               p.vy += (ty-p.y)*1.75*coupling*sdt;
             }
@@ -409,7 +533,9 @@
       const sprite=this.particleSprite;
       const half=this.spriteHalf;
       for (const p of this.particles) {
-        c.drawImage(sprite,p.x*this.sx-half,p.y*this.sy-half);
+        const scale=p.detached ? .82 : 1;
+        const sw=sprite.width*scale, sh=sprite.height*scale;
+        c.drawImage(sprite,p.x*this.sx-sw/2,p.y*this.sy-sh/2,sw,sh);
       }
       c.restore();
     }
@@ -514,5 +640,5 @@
     engine.setColor(button.dataset.color);
   }));
   window.ShizukuEngine4Alpha=ShizukuEngine4Alpha;
-  console.info('Shizuku Engine 4.0 alpha v0.5 Viscosity 1.0');
+  console.info('Shizuku Engine 4.0 alpha v0.6 Paint Clump 1.0');
 })();
