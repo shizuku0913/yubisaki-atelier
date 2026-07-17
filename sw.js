@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yubisaki-atelier-v3-0-0-alpha1';
+const CACHE_NAME = 'yubisaki-atelier-v3-0-0-m1-6-organic';
 const APP_FILES = [
   './',
   './index.html',
@@ -8,7 +8,6 @@ const APP_FILES = [
   './js/mixEngine.js',
   './js/renderer.js',
   './js/fingerDynamics.js',
-  './js/paintPhysics.js',
   './js/app.js',
   './manifest.json',
   './assets/icons/icon-192.png',

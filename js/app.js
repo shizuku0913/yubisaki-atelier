@@ -1,8 +1,7 @@
 (function(){
   "use strict";
 
-  // Kids mode favors a clear final color; Real mode preserves marbling longer.
-  let kidsMixMode = localStorage.getItem("yubisakiMixMode") !== "real";
+  // Mixing is intentionally real-only: pigment remains marbled until the gesture physically blends it.
 
   // ---- sound effects ----
   let audioCtx = null;
@@ -1104,7 +1103,9 @@
     patch.width=Math.max(1,Math.round(sw*dpr));
     patch.height=Math.max(1,Math.round(sh*dpr));
     const pctx=patch.getContext('2d');
-    pctx.drawImage(stageCanvas,
+    // Sample the live physics layer, not the legacy pigment canvas.
+    // This keeps deformation temporary and prevents diluted pigment from being re-stamped.
+    pctx.drawImage(physicsCanvas,
       Math.round(sx*dpr),Math.round(sy*dpr),patch.width,patch.height,
       0,0,patch.width,patch.height);
 
@@ -1263,7 +1264,7 @@
     setFeelPoint(clientX,clientY);
     lastFeelVector={dx:0,dy:0};
     drawLocalDeformation(clientX,clientY,'press',0,0,.48);
-    { const rr=stageCanvas.getBoundingClientRect(), dish=dishes[selectedPaletteIndex]; if(dish.physicsField) dish.physicsField.press((clientX-rr.left)/rr.width,(clientY-rr.top)/rr.height,.13,.95); }
+    { const rr=stageCanvas.getBoundingClientRect(), dish=dishes[selectedPaletteIndex]; if(dish.physicsField) dish.physicsField.beginPress((clientX-rr.left)/rr.width,(clientY-rr.top)/rr.height,.13,.95); }
     startPressFeelLoop(clientX,clientY);
     softHaptic(12);
     stageDish.classList.remove('paint-release');
@@ -1291,7 +1292,11 @@
   function releasePaintFeel(){
     stopPressFeelLoop();
     feelPressPoint=null;
-    settlePaintAt(lastFeelPoint,lastFeelVector);
+    { const dish=dishes[selectedPaletteIndex]; if(dish && dish.physicsField) dish.physicsField.endPress(); }
+    // Shizuku M1.5: the elastic physics layer already performs the release rebound.
+    // Do not stamp sampled pixels back onto the pigment canvas here: repeated
+    // touches on diluted paint used to build opacity and look like new color.
+    // settlePaintAt(lastFeelPoint,lastFeelVector);
     stageDish.classList.remove('paint-press','paint-mixing');
     stageDish.classList.remove('paint-release');
     void stageDish.offsetWidth;
@@ -1354,7 +1359,7 @@
       storage, storageCtx: null, size: STAGE_SIZE, dpr: stageDpr,
       activeStamp:null, hasPaint:false, currentColor:null, mixProgress:0, fullyMixed:false,
       usedTubeNames:new Set(), hasGlitter:false, paintModel:null,
-      physicsField: PhysicsFieldModel ? new PhysicsFieldModel(56) : null
+      physicsField: PhysicsFieldModel ? new PhysicsFieldModel(72) : null
     });
 
     const btn = document.createElement('button');
@@ -1372,13 +1377,6 @@
     const newSize = Math.round(rect.width - 16); // minus inset padding
     if(newSize===STAGE_SIZE && dpr===stageDpr) return;
 
-    // preserve current visible paint by scaling old content into the new resolution
-    let prevData = null;
-    if(stageCanvas.width>0){
-      prevData = document.createElement('canvas');
-      prevData.width = stageCanvas.width; prevData.height = stageCanvas.height;
-      prevData.getContext('2d').drawImage(stageCanvas,0,0);
-    }
     STAGE_SIZE = newSize; stageDpr = dpr;
     stageCanvas.width = STAGE_SIZE*dpr;
     stageCanvas.height = STAGE_SIZE*dpr;
@@ -1388,7 +1386,6 @@
     physicsCanvas.style.width = STAGE_SIZE+'px'; physicsCanvas.style.height = STAGE_SIZE+'px';
     physicsCtx.setTransform(dpr,0,0,dpr,0,0);
     stageCtx.scale(dpr,dpr);
-    if(prevData){ stageCtx.drawImage(prevData,0,0,prevData.width,prevData.height,0,0,STAGE_SIZE,STAGE_SIZE); }
 
     dishes.forEach(d=>{
       const oldStorage = d.storage;
@@ -1440,9 +1437,8 @@
     stageCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
     physicsCtx.clearRect(0,0,STAGE_SIZE,STAGE_SIZE);
     clearFeelCanvas();
-    if(dish.storageCtx && dish.hasPaint){
-      stageCtx.drawImage(dish.storage,0,0,dish.storage.width,dish.storage.height,0,0,STAGE_SIZE,STAGE_SIZE);
-    }
+    // Pigment is rendered from the per-palette physics field only.
+    // Legacy pixel storage is deliberately not restored.
     // Render the selected palette's own physics field immediately, rather
     // than leaving the previous field visible until the next animation frame.
     if(dish.physicsField){
@@ -1545,8 +1541,8 @@
   function samplePixel(lx, ly){
     const dpr = stageDpr;
     const px = Math.round(lx*dpr), py = Math.round(ly*dpr);
-    if(px<0||py<0||px>=stageCanvas.width||py>=stageCanvas.height) return null;
-    const d = stageCtx.getImageData(px,py,1,1).data;
+    if(px<0||py<0||px>=physicsCanvas.width||py>=physicsCanvas.height) return null;
+    const d = physicsCtx.getImageData(px,py,1,1).data;
     if(d[3]<10) return null;
     return rgbToHex(d[0],d[1],d[2]);
   }
@@ -1555,12 +1551,12 @@
     const dpr = stageDpr;
     const size = Math.max(2, Math.round(radius*2*dpr));
     let px = Math.round(lx*dpr - size/2), py = Math.round(ly*dpr - size/2);
-    const cw = stageCanvas.width, ch = stageCanvas.height;
+    const cw = physicsCanvas.width, ch = physicsCanvas.height;
     const x0 = Math.max(0,px), y0 = Math.max(0,py);
     const x1 = Math.min(cw, px+size), y1 = Math.min(ch, py+size);
     const w = x1-x0, h = y1-y0;
     if(w<=0||h<=0) return null;
-    const d = stageCtx.getImageData(x0,y0,w,h).data;
+    const d = physicsCtx.getImageData(x0,y0,w,h).data;
     let r=0,g=0,b=0,aSum=0,count=0;
     for(let i=0;i<d.length;i+=4){
       const a = d[i+3];
@@ -1903,97 +1899,21 @@
   }
 
  function smudgeStep(fromX, fromY, toX, toY, motion = {}) {
-    const dx = toX - fromX;
-    const dy = toY - fromY;
-    const distance = Math.hypot(dx, dy);
-    if (distance < 0.15) return false;
+    const distance = Math.hypot(toX-fromX, toY-fromY);
+    if(distance < 0.15) return false;
+    const dish = dishes[selectedPaletteIndex];
+    if(!dish || !dish.physicsField || STAGE_SIZE <= 0) return false;
 
-    const radius = Math.max(18, Math.min(34, motion.radius || 26));
-    const ribbonAlpha = Math.max(0.22, Math.min(0.72, motion.marbleAlpha || 0.52));
-    const blendAlpha = Math.max(0.08, Math.min(0.30, motion.blendAlpha || 0.18));
-    const ribbonWidth = Math.max(2.2, Math.min(6, motion.ribbonWidth || 4));
-    const dpr = stageDpr || window.devicePixelRatio || 1;
+    // Pigment is transported only inside the conservative physics field.
+    // No pixels are copied or painted onto stageCanvas, so every touch moves
+    // existing pigment instead of creating another translucent colour layer.
+    const nx = fromX / STAGE_SIZE;
+    const ny = fromY / STAGE_SIZE;
+    const amount = dish.physicsField.sampleAmount
+      ? dish.physicsField.sampleAmount(nx, ny, 0.055)
+      : 1;
+    if(amount < 0.008) return false;
 
-    // Copy real pixels from the point under the finger.  We deliberately use
-    // source-over throughout: multiply repeatedly darkened the same pixels and
-    // produced the black track reported on mobile devices.
-    const sxCss = Math.max(0, fromX - radius);
-    const syCss = Math.max(0, fromY - radius);
-    const swCss = Math.min(radius * 2, STAGE_SIZE - sxCss);
-    const shCss = Math.min(radius * 2, STAGE_SIZE - syCss);
-    if (swCss <= 1 || shCss <= 1) return false;
-
-    const patch = document.createElement('canvas');
-    patch.width = Math.max(1, Math.round(swCss * dpr));
-    patch.height = Math.max(1, Math.round(shCss * dpr));
-    const pctx = patch.getContext('2d');
-    pctx.drawImage(
-      stageCanvas,
-      Math.round(sxCss * dpr), Math.round(syCss * dpr),
-      patch.width, patch.height,
-      0, 0, patch.width, patch.height
-    );
-
-    // Reject an empty patch so touching bare porcelain does not paint a trail.
-    const probe = pctx.getImageData(0, 0, patch.width, patch.height).data;
-    let hasPaint = false;
-    for (let i = 3; i < probe.length; i += 16) {
-      if (probe[i] > 18) { hasPaint = true; break; }
-    }
-    if (!hasPaint) return false;
-
-    const len = distance || 1;
-    const nx = -dy / len;
-    const ny = dx / len;
-    const angle = Math.atan2(dy, dx);
-
-    stageCtx.save();
-    stageCtx.globalCompositeOperation = 'source-over';
-    stageCtx.imageSmoothingEnabled = true;
-
-    // Three offset ribbons pull different neighbouring pigments along the
-    // gesture.  Slow movement leaves stronger, narrower ribbons; fast movement
-    // spreads them wider and blends them sooner.
-    [-0.34, 0, 0.34].forEach((ratio, index) => {
-      const offset = radius * ratio;
-      const cx = toX + nx * offset;
-      const cy = toY + ny * offset;
-      const major = radius * (index === 1 ? 1.05 : 0.82);
-      const minor = ribbonWidth * (index === 1 ? 1.45 : 1.0);
-
-      stageCtx.save();
-      stageCtx.globalAlpha = ribbonAlpha * (index === 1 ? 0.88 : 0.68);
-      stageCtx.beginPath();
-      stageCtx.ellipse(cx, cy, major, minor, angle, 0, Math.PI * 2);
-      stageCtx.clip();
-      stageCtx.drawImage(
-        patch,
-        0, 0, patch.width, patch.height,
-        cx - radius, cy - radius, radius * 2, radius * 2
-      );
-      stageCtx.restore();
-    });
-
-    // A soft connector avoids dotted gaps while preserving the coloured
-    // ribbons.  It uses the sampled colour, never black or multiply blending.
-    const picked = samplePatchAverage(fromX, fromY, 7) || samplePatchAverage(toX, toY, 7);
-    if (picked) {
-      stageCtx.globalAlpha = blendAlpha;
-      stageCtx.strokeStyle = `rgb(${picked.r|0},${picked.g|0},${picked.b|0})`;
-      stageCtx.lineWidth = Math.max(5, ribbonWidth * 2.2);
-      stageCtx.lineCap = 'round';
-      stageCtx.lineJoin = 'round';
-      stageCtx.beginPath();
-      stageCtx.moveTo(fromX, fromY);
-      stageCtx.quadraticCurveTo(
-        (fromX + toX) / 2 + nx * radius * 0.15,
-        (fromY + toY) / 2 + ny * radius * 0.15,
-        toX, toY
-      );
-      stageCtx.stroke();
-    }
-
-    stageCtx.restore();
     playMixSound();
     return true;
   }
@@ -2017,36 +1937,9 @@
   }
 
   function waterBlobStamp(cx, cy, r){
-    const generation = paletteRenderGeneration;
-    const ctx = stageCtx;
+    // Water changes wetness in PaintPhysicsField only. The previous animated
+    // stageCanvas wash permanently accumulated pale pigment after each touch.
     triggerWaterBloom(cx,cy,r);
-
-    // A short time-based bloom: pigment is sampled at the drop point and
-    // carried outward in soft translucent rings instead of appearing at once.
-    const sampled = samplePatchAverage(cx,cy,Math.max(8,r*.35));
-    const pigment = sampled || {r:210,g:240,b:255};
-    const started = performance.now();
-    const duration = 1050;
-    function frame(now){
-      if(generation !== paletteRenderGeneration) return;
-      const t=Math.min(1,(now-started)/duration);
-      const eased=1-Math.pow(1-t,3);
-      const rr=Math.max(3,r*(.18+eased*.95));
-      ctx.save();
-      ctx.globalCompositeOperation='source-over';
-      const alpha=(1-t)*.075;
-      const grad=ctx.createRadialGradient(cx,cy,rr*.12,cx,cy,rr);
-      grad.addColorStop(0,`rgba(${pigment.r|0},${pigment.g|0},${pigment.b|0},${alpha*.25})`);
-      grad.addColorStop(.62,`rgba(${pigment.r|0},${pigment.g|0},${pigment.b|0},${alpha})`);
-      grad.addColorStop(1,`rgba(${pigment.r|0},${pigment.g|0},${pigment.b|0},0)`);
-      ctx.beginPath();ctx.arc(cx,cy,rr,0,Math.PI*2);ctx.fillStyle=grad;ctx.fill();
-      // pale wet center keeps the visible water cue without blue paint
-      ctx.globalAlpha=(1-t)*.12;
-      ctx.beginPath();ctx.arc(cx,cy,rr*.45,0,Math.PI*2);ctx.fillStyle='#ffffff';ctx.fill();
-      ctx.restore();
-      if(t<1) requestAnimationFrame(frame);
-    }
-    requestAnimationFrame(frame);
   }
 
   // Keeps a palette's total "amount" of paint (all pigment ticks + water
@@ -2078,17 +1971,7 @@
       const rad = Math.random()*R;
       dish.activeStamp = { x: cx+Math.cos(angle)*rad, y: cy+Math.sin(angle)*rad, r: STAGE_SIZE*0.09 };
     } else {
-      // clear this stamp's previous render first - otherwise each tick's
-      // 'multiply' blend would stack on top of its own earlier paint and
-      // progressively darken it, instead of just growing as one blob
-      const clearCtx = stageCtx;
-      clearCtx.save();
-      clearCtx.globalCompositeOperation = 'destination-out';
-      clearCtx.beginPath();
-      clearCtx.arc(dish.activeStamp.x, dish.activeStamp.y, dish.activeStamp.r*1.2, 0, Math.PI*2);
-      clearCtx.fillStyle = 'rgba(0,0,0,1)';
-      clearCtx.fill();
-      clearCtx.restore();
+      // The visible blob lives only in the continuous physics field.
       dish.activeStamp.r = Math.min(STAGE_SIZE*0.24, dish.activeStamp.r + STAGE_SIZE*0.018);
     }
 
@@ -2111,7 +1994,6 @@
         dish.paintModel.wetness = Math.min(1, dish.paintModel.wetness + 0.025);
         dish.paintModel.gloss = Math.min(1, dish.paintModel.gloss + 0.025);
       }
-      paintBlobStamp(dish.activeStamp.x, dish.activeStamp.y, dish.activeStamp.r, selectedColor, dish.paintModel);
       if(dish.physicsField) dish.physicsField.deposit(dish.activeStamp.x/STAGE_SIZE,dish.activeStamp.y/STAGE_SIZE,dish.activeStamp.r/STAGE_SIZE,selectedColor,.5,0);
       dish.hasPaint = true;
       dish.mixProgress = 0;
@@ -2284,22 +2166,11 @@
       didDrag = true;
       const dish = dishes[selectedPaletteIndex];
       dish.mixProgress += distance * motion.progressMultiplier;
-      const finishDistance = STAGE_SIZE * (kidsMixMode ? 1.65 : 3.0);
+      const finishDistance = STAGE_SIZE * 3.0;
       const mixRatio = Math.min(1, dish.mixProgress / finishDistance);
       if(dish.paintModel){
         dish.paintModel.mixLevel = mixRatio;
         dish.paintModel.viscosity = Math.max(0.22, dish.paintModel.viscosity - motion.speed01*0.0025);
-      }
-      // In kids mode, progressively pull all visible pigment toward the clean
-      // recipe color, so the result becomes easy to read instead of staying
-      // speckled with many leftover colors.
-      if(kidsMixMode && dish.physicsField && mixRatio > 0.28){
-        const target = computeSubtractiveMix(dish.colorTicks||{});
-        if(target){
-          const targetHex = rgbToHex(target.r,target.g,target.b);
-          const strength = 0.025 + Math.pow((mixRatio-0.28)/0.72, 1.35) * 0.16;
-          dish.physicsField.homogenize(targetHex, strength, 0.025);
-        }
       }
       if(dish.mixProgress > finishDistance && !dish.fullyMixed){
         finishMixToSingleColor(dish);
@@ -2449,20 +2320,7 @@
   const palettePanel = document.getElementById('palettePanel');
   const brushPanel = document.getElementById('brushPanel');
   const settingsPanel = document.getElementById('settingsPanel');
-  const mixModeBtn = document.getElementById('mixModeBtn');
-  function updateMixModeButton(){
-    if(!mixModeBtn) return;
-    mixModeBtn.textContent = kidsMixMode ? '🧒 まぜかた：キッズ' : '🎨 まぜかた：リアル';
-  }
-  if(mixModeBtn){
-    updateMixModeButton();
-    mixModeBtn.addEventListener('click', ()=>{
-      kidsMixMode = !kidsMixMode;
-      localStorage.setItem('yubisakiMixMode', kidsMixMode ? 'kids' : 'real');
-      updateMixModeButton();
-      showToast(kidsMixMode ? 'きれいにまざるモード' : 'マーブルがのこるモード');
-    });
-  }
+
   document.getElementById('paletteMenuBtn').addEventListener('click', e=>{
     e.stopPropagation();
     toggleDropdown(palettePanel);
